@@ -317,6 +317,7 @@ client/components/count-badge.vala
 client/components/folder-menu.vala
 client/components/icon-factory.vala
 client/components/main-toolbar.vala
+client/components/status-icon.vala
 client/components/main-window.vala
 client/components/monitored-progress-bar.vala
 client/components/monitored-spinner.vala

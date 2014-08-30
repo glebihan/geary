@@ -103,7 +103,8 @@ public class MainWindow : Gtk.ApplicationWindow {
         if (Args.hidden_startup || GearyApplication.instance.config.startup_notifications)
             return hide_on_delete();
         
-        GearyApplication.instance.exit();
+//~         GearyApplication.instance.exit();
+        GearyApplication.instance.controller.main_window.hide();
         
         return true;
     }
@@ -325,4 +326,3 @@ public class MainWindow : Gtk.ApplicationWindow {
             main_toolbar.subtitle = current_folder.get_display_name();
     }
 }
-
