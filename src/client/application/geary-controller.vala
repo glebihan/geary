@@ -1360,7 +1360,7 @@ public class GearyController : Geary.BaseObject {
     private void on_libnotify_invoked(Geary.Folder? folder, Geary.Email? email) {
         new_messages_monitor.clear_all_new_messages();
         
-        if (folder == null || email == null)
+        if (folder == null || email == null || !can_switch_conversation_view())
             return;
         
         main_window.folder_list.select_folder(folder);
@@ -2269,6 +2269,9 @@ public class GearyController : Geary.BaseObject {
     
     private async void archive_or_delete_selection_async(bool archive, bool trash,
         Cancellable? cancellable) throws Error {
+        if (!can_switch_conversation_view())
+            return;
+        
         if (main_window.conversation_viewer.current_conversation != null
             && main_window.conversation_viewer.current_conversation == last_deleted_conversation) {
             debug("Not archiving/trashing/deleting; viewed conversation is last deleted conversation");
