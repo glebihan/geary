@@ -109,12 +109,17 @@ public class ComposerWidget : Gtk.EventBox {
         </head><body>
         <div id="message-body" contenteditable="true"></div>
         </body></html>""";
+    private const string CURSOR = "<span id=\"cursormarker\"></span>";
     
     private const int DRAFT_TIMEOUT_MSEC = 2000; // 2 seconds
     
-    public const string ATTACHMENT_KEYWORDS_GENERIC = ".doc|.pdf|.xls|.ppt|.rtf|.pps";
-    /// A list of keywords, separated by pipe ("|") characters, that suggest an attachment
-    public const string ATTACHMENT_KEYWORDS_LOCALIZED = _("attach|enclosed|enclosing|cover letter");
+    public const string ATTACHMENT_KEYWORDS_SUFFIX = ".doc|.pdf|.xls|.ppt|.rtf|.pps";
+    
+    // A list of keywords, separated by pipe ("|") characters, that suggest an attachment; since
+    // this is full-word checking, include all variants of each word.  No spaces are allowed.
+    public const string ATTACHMENT_KEYWORDS_LOCALIZED = _("attach|attaching|attaches|attachment|attachments|attached|enclose|enclosed|enclosing|encloses|enclosure|enclosures");
+    
+    private delegate bool CompareStringFunc(string key, string token);
     
     public Geary.Account account { get; private set; }
     
@@ -215,6 +220,7 @@ public class ComposerWidget : Gtk.EventBox {
     private string reply_subject = "";
     private string forward_subject = "";
     private string reply_message_id = "";
+    private bool top_posting = true;
     
     private Geary.FolderSupport.Create? drafts_folder = null;
     private Geary.EmailIdentifier? draft_id = null;
@@ -233,7 +239,7 @@ public class ComposerWidget : Gtk.EventBox {
     }
     
     public ComposerWidget(Geary.Account account, ComposeType compose_type,
-        Geary.Email? referred = null, bool is_referred_draft = false) {
+        Geary.Email? referred = null, string? quote = null, bool is_referred_draft = false) {
         this.account = account;
         this.compose_type = compose_type;
         if (compose_type == ComposeType.NEW_MESSAGE)
@@ -402,7 +408,7 @@ public class ComposerWidget : Gtk.EventBox {
                     if (referred.bcc != null)
                         bcc = referred.bcc.to_rfc822_string();
                     if (referred.in_reply_to != null)
-                        in_reply_to = referred.in_reply_to.value;
+                        in_reply_to = referred.in_reply_to.to_rfc822_string();
                     if (referred.references != null)
                         references = referred.references.to_rfc822_string();
                     if (referred.subject != null)
@@ -428,13 +434,15 @@ public class ComposerWidget : Gtk.EventBox {
                     subject = reply_subject;
                     in_reply_to = reply_message_id;
                     references = Geary.RFC822.Utils.reply_references(referred);
-                    body_html = "\n\n" + Geary.RFC822.Utils.quote_email_for_reply(referred, true);
+                    body_html = "\n\n" + Geary.RFC822.Utils.quote_email_for_reply(referred, quote, true);
                     pending_attachments = referred.attachments;
+                    if (quote != null)
+                        top_posting = false;
                 break;
                 
                 case ComposeType.FORWARD:
                     subject = forward_subject;
-                    body_html = "\n\n" + Geary.RFC822.Utils.quote_email_for_forward(referred, true);
+                    body_html = "\n\n" + Geary.RFC822.Utils.quote_email_for_forward(referred, quote, true);
                     add_attachments(referred.attachments);
                     pending_attachments = referred.attachments;
                 break;
@@ -443,7 +451,9 @@ public class ComposerWidget : Gtk.EventBox {
         
         // only add signature if the option is actually set and if this is not a draft
         if (account.information.use_email_signature && !is_referred_draft)
-            add_signature();
+            add_signature_and_cursor();
+        else
+            set_cursor();
         
         editor = new StylishWebView();
         edit_fixer = new WebViewEditFixer(editor);
@@ -587,8 +597,8 @@ public class ComposerWidget : Gtk.EventBox {
     }
     
     private void on_load_finished(WebKit.WebFrame frame) {
-        WebKit.DOM.HTMLElement? body = editor.get_dom_document().get_element_by_id(
-            BODY_ID) as WebKit.DOM.HTMLElement;
+        WebKit.DOM.Document document = editor.get_dom_document();
+        WebKit.DOM.HTMLElement? body = document.get_element_by_id(BODY_ID) as WebKit.DOM.HTMLElement;
         assert(body != null);
 
         if (!Geary.String.is_empty(body_html)) {
@@ -599,6 +609,22 @@ public class ComposerWidget : Gtk.EventBox {
             }
         }
         body.focus();  // Focus within the HTML document
+
+        // Set cursor at appropriate position
+        try {
+            WebKit.DOM.Element? cursor = document.get_element_by_id("cursormarker");
+            if (cursor != null) {
+                WebKit.DOM.Range range = document.create_range();
+                range.select_node_contents(cursor);
+                range.collapse(false);
+                WebKit.DOM.DOMSelection selection = document.default_view.get_selection();
+                selection.remove_all_ranges();
+                selection.add_range(range);
+                cursor.parent_element.remove_child(cursor);
+            }
+        } catch (Error error) {
+            debug("Error setting cursor at end of text: %s", error.message);
+        }
 
         protect_blockquote_styles();
         
@@ -741,7 +767,8 @@ public class ComposerWidget : Gtk.EventBox {
         show_attachments();
     }
     
-    public void change_compose_type(ComposeType new_type) {
+    public void change_compose_type(ComposeType new_type, Geary.Email? referred = null,
+        string? quote = null) {
         if (new_type != compose_type) {
             bool recipients_modified = to_entry.modified || cc_entry.modified || bcc_entry.modified;
             switch (new_type) {
@@ -775,42 +802,63 @@ public class ComposerWidget : Gtk.EventBox {
                     assert_not_reached();
             }
             compose_type = new_type;
+        } else if (referred != null && quote != null) {
+            WebKit.DOM.Document document = editor.get_dom_document();
+            // Always use reply styling, since forward styling doesn't work for inline quotes
+            document.exec_command("insertHTML", false,
+                Geary.RFC822.Utils.quote_email_for_reply(referred, quote, true));
         }
         
         container.present();
         set_focus();
     }
     
-    private void add_signature() {
+    private void add_signature_and_cursor() {
         string? signature = null;
         
         // If use signature is enabled but no contents are on settings then we'll use ~/.signature, if any
         // otherwise use whatever the user has input in settings dialog
         if (account.information.use_email_signature && Geary.String.is_empty_or_whitespace(account.information.email_signature)) {
             File signature_file = File.new_for_path(Environment.get_home_dir()).get_child(".signature");
-            if (!signature_file.query_exists())
+            if (!signature_file.query_exists()) {
+                set_cursor();
                 return;
+            }
             
             try {
                 FileUtils.get_contents(signature_file.get_path(), out signature);
-                if (Geary.String.is_empty_or_whitespace(signature))
+                if (Geary.String.is_empty_or_whitespace(signature)) {
+                    set_cursor();
                     return;
+                }
             } catch (Error error) {
                 debug("Error reading signature file %s: %s", signature_file.get_path(), error.message);
+                set_cursor();
                 return;
             }
         } else {
             signature = account.information.email_signature;
-            if(Geary.String.is_empty_or_whitespace(signature))
+            if(Geary.String.is_empty_or_whitespace(signature)) {
+                set_cursor();
                 return;
+            }
         }
         
         signature = Geary.HTML.escape_markup(signature);
         
         if (body_html == null)
-            body_html = Geary.HTML.preserve_whitespace("\n\n" + signature);
+            body_html = CURSOR + Geary.HTML.preserve_whitespace("\n\n" + signature);
+        else if (top_posting)
+            body_html = CURSOR + Geary.HTML.preserve_whitespace("\n\n" + signature) + body_html;
         else
-            body_html = Geary.HTML.preserve_whitespace("\n\n" + signature) + body_html;
+            body_html = body_html + CURSOR + Geary.HTML.preserve_whitespace("\n\n" + signature);
+    }
+    
+    private void set_cursor() {
+        if (top_posting)
+            body_html = CURSOR + body_html;
+        else
+            body_html = body_html + CURSOR;
     }
     
     private bool can_save() {
@@ -863,6 +911,27 @@ public class ComposerWidget : Gtk.EventBox {
             ((ComposerEmbed) parent).on_detach();
     }
     
+    // compares all keys to all tokens according to user-supplied comparison function
+    // Returns true if found
+    private bool search_tokens(string[] keys, string[] tokens, CompareStringFunc cmp_func,
+        out string? found_key, out string? found_token) {
+        foreach (string key in keys) {
+            foreach (string token in tokens) {
+                if (cmp_func(key, token)) {
+                    found_key = key;
+                    found_token = token;
+                    
+                    return true;
+                }
+            }
+        }
+        
+        found_key = null;
+        found_token = null;
+        
+        return false;
+    }
+    
     private bool email_contains_attachment_keywords() {
         // Filter out all content contained in block quotes
         string filtered = @"$subject\n";
@@ -876,30 +945,41 @@ public class ComposerWidget : Gtk.EventBox {
             debug("Error building regex in keyword checker: %s", error.message);
         }
         
-        string[] keys = ATTACHMENT_KEYWORDS_GENERIC.casefold().split("|");
-        foreach (string key in ATTACHMENT_KEYWORDS_LOCALIZED.casefold().split("|")) {
-            keys += key;
-        }
+        string[] suffix_keys = ATTACHMENT_KEYWORDS_SUFFIX.casefold().split("|");
+        string[] full_word_keys = ATTACHMENT_KEYWORDS_LOCALIZED.casefold().split("|");
         
-        string folded;
         foreach (string line in filtered.split("\n")) {
             // Stop looking once we hit forwarded content
             if (line.has_prefix("--")) {
                 break;
             }
             
-            folded = line.casefold();
-            foreach (string key in keys) {
-                if (key in folded) {
-                    try {
-                        // Make sure the match isn't coming from a url
-                        if (key in url_regex.replace(folded, -1, 0, "")) {
-                            return true;
-                        }
-                    } catch (Error error) {
-                        debug("Regex replacement error in keyword checker: %s", error.message);
+            // casefold line, strip start and ending whitespace, then tokenize by whitespace
+            string folded = line.casefold().strip();
+            string[] tokens = folded.split_set(" \t");
+            
+            // search for full-word matches
+            string? found_key, found_token;
+            bool found = search_tokens(full_word_keys, tokens, (key, token) => {
+                return key == token;
+            }, out found_key, out found_token);
+            
+            // if not found, search for suffix matches
+            if (!found) {
+                found = search_tokens(suffix_keys, tokens, (key, token) => {
+                    return token.has_suffix(key);
+                }, out found_key, out found_token);
+            }
+            
+            if (found) {
+                try {
+                    // Make sure the match isn't coming from a url
+                    if (found_key in url_regex.replace(folded, -1, 0, "")) {
                         return true;
                     }
+                } catch (Error error) {
+                    debug("Regex replacement error in keyword checker: %s", error.message);
+                    return true;
                 }
             }
         }

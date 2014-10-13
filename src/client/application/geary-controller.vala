@@ -1413,7 +1413,7 @@ public class GearyController : Geary.BaseObject {
     }
     
     private void on_edit_draft(Geary.Email draft) {
-        create_compose_widget(ComposerWidget.ComposeType.NEW_MESSAGE, draft, null, true);
+        create_compose_widget(ComposerWidget.ComposeType.NEW_MESSAGE, draft, null, null, true);
     }
     
     private void on_special_folder_type_changed(Geary.Folder folder, Geary.SpecialFolderType old_type,
@@ -2066,17 +2066,19 @@ public class GearyController : Geary.BaseObject {
     }
     
     private void create_compose_widget(ComposerWidget.ComposeType compose_type,
-        Geary.Email? referred = null, string? mailto = null, bool is_draft = false) {
-        create_compose_widget_async.begin(compose_type, referred, mailto, is_draft);
+        Geary.Email? referred = null, string? quote = null, string? mailto = null,
+        bool is_draft = false) {
+        create_compose_widget_async.begin(compose_type, referred, quote, mailto, is_draft);
     }
     
     private async void create_compose_widget_async(ComposerWidget.ComposeType compose_type,
-        Geary.Email? referred = null, string? mailto = null, bool is_draft = false) {
+        Geary.Email? referred = null, string? quote = null, string? mailto = null,
+        bool is_draft = false) {
         if (current_account == null)
             return;
         
         bool inline;
-        if (!should_create_new_composer(compose_type, referred, out inline))
+        if (!should_create_new_composer(compose_type, referred, quote, out inline))
             return;
         
         ComposerWidget widget;
@@ -2094,7 +2096,7 @@ public class GearyController : Geary.BaseObject {
                 }
             }
             
-            widget = new ComposerWidget(current_account, compose_type, full, is_draft);
+            widget = new ComposerWidget(current_account, compose_type, full, quote, is_draft);
         }
         widget.show_all();
         
@@ -2113,7 +2115,7 @@ public class GearyController : Geary.BaseObject {
     }
     
     private bool should_create_new_composer(ComposerWidget.ComposeType? compose_type,
-        Geary.Email? referred, out bool inline) {
+        Geary.Email? referred, string? quote, out bool inline) {
         inline = true;
         
         // In we're replying, see whether we already have a reply for that message.
@@ -2121,7 +2123,7 @@ public class GearyController : Geary.BaseObject {
             foreach (ComposerWidget cw in composer_widgets) {
                 if (cw.state != ComposerWidget.ComposerState.DETACHED &&
                     referred != null && referred.id.equal_to(cw.referred_id)) {
-                    cw.change_compose_type(compose_type);
+                    cw.change_compose_type(compose_type, referred, quote);
                     return false;
                 }
             }
@@ -2168,7 +2170,7 @@ public class GearyController : Geary.BaseObject {
     
     public bool can_switch_conversation_view() {
         bool inline;
-        return should_create_new_composer(null, null, out inline);
+        return should_create_new_composer(null, null, null, out inline);
     }
     
     public bool any_inline_composers() {
@@ -2199,9 +2201,10 @@ public class GearyController : Geary.BaseObject {
     }
     
     private void on_reply_to_message_action() {
-        Geary.Email? message = main_window.conversation_viewer.get_last_message();
+        string? quote;
+        Geary.Email? message = main_window.conversation_viewer.get_selected_message(out quote);
         if (message != null)
-            on_reply_to_message(message);
+            create_compose_widget(ComposerWidget.ComposeType.REPLY, message, quote);
     }
     
     private void on_reply_all_message(Geary.Email message) {
@@ -2209,9 +2212,10 @@ public class GearyController : Geary.BaseObject {
     }
     
     private void on_reply_all_message_action() {
-        Geary.Email? message = main_window.conversation_viewer.get_last_message();
+        string? quote;
+        Geary.Email? message = main_window.conversation_viewer.get_selected_message(out quote);
         if (message != null)
-            on_reply_all_message(message);
+            create_compose_widget(ComposerWidget.ComposeType.REPLY_ALL, message, quote);
     }
     
     private void on_forward_message(Geary.Email message) {
@@ -2219,9 +2223,10 @@ public class GearyController : Geary.BaseObject {
     }
     
     private void on_forward_message_action() {
-        Geary.Email? message = main_window.conversation_viewer.get_last_message();
+        string? quote;
+        Geary.Email? message = main_window.conversation_viewer.get_selected_message(out quote);
         if (message != null)
-            on_forward_message(message);
+            create_compose_widget(ComposerWidget.ComposeType.FORWARD, message, quote);
     }
     
     private void on_find_in_conversation_action() {
@@ -2467,7 +2472,7 @@ public class GearyController : Geary.BaseObject {
             return;
         }
         
-        create_compose_widget(ComposerWidget.ComposeType.NEW_MESSAGE, null, mailto);
+        create_compose_widget(ComposerWidget.ComposeType.NEW_MESSAGE, null, null, mailto);
     }
     
     // Returns a list of composer windows for an account, or null if none.

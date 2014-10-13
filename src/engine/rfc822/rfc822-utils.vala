@@ -119,10 +119,13 @@ public string reply_references(Geary.Email source) {
     if (source.references != null && source.references.list.size > 0)
         list.add_all(source.references.list);
     
-    // 2. If there's an In-Reply-To Message-ID and it's not the last Message-ID on the 
-    //    References list, append it
-    if (source.in_reply_to != null && list.size > 0 && !list.last().equal_to(source.in_reply_to))
-        list.add(source.in_reply_to);
+    // 2. If there are In-Reply-To Message-IDs and they're not in the References list, append them
+    if (source.in_reply_to != null) {
+        foreach (RFC822.MessageID reply_id in source.in_reply_to.list) {
+            if (!list.contains(reply_id))
+                list.add(reply_id);
+        }
+    }
     
     // 3. Append the source's Message-ID, if available.
     if (source.message_id != null)
@@ -148,17 +151,17 @@ public string email_addresses_for_reply(Geary.RFC822.MailboxAddresses? addresses
 /**
  * Returns a quoted text string needed for a reply.
  *
- * If there's no message body in the supplied email, this function will
- * return the empty string.
+ * If there's no message body in the supplied email or quote text, this
+ * function will return the empty string.
  * 
  * If html_format is true, the message will be quoted in HTML format.
  * Otherwise it will be in plain text.
  */
-public string quote_email_for_reply(Geary.Email email, bool html_format) {
-    if (email.body == null)
+public string quote_email_for_reply(Geary.Email email, string? quote, bool html_format) {
+    if (email.body == null && quote == null)
         return "";
     
-    string quoted = "<br /><br />";
+    string quoted = (quote == null) ? "<br /><br />" : "";
     
     /// Format for the datetime that a message being replied to was received
     /// See http://developer.gnome.org/glib/2.32/glib-GDateTime.html#g-date-time-format
@@ -187,8 +190,10 @@ public string quote_email_for_reply(Geary.Email email, bool html_format) {
     
     quoted += "<br />";
     
-    if (email.body != null)
-        quoted += "\n" + quote_body(email, true, html_format);
+    quoted += "\n" + quote_body(email, quote, true, html_format);
+    
+    if (quote != null)
+        quoted += "<br /><br />\n";
     
     return quoted;
 }
@@ -196,14 +201,14 @@ public string quote_email_for_reply(Geary.Email email, bool html_format) {
 /**
  * Returns a quoted text string needed for a forward.
  *
- * If there's no message body in the supplied email, this function will
- * return the empty string.
+ * If there's no message body in the supplied email or quote text, this
+ * function will return the empty string.
  *
  * If html_format is true, the message will be quoted in HTML format.
  * Otherwise it will be in plain text.
  */
-public string quote_email_for_forward(Geary.Email email, bool html_format) {
-    if (email.body == null)
+public string quote_email_for_forward(Geary.Email email, string? quote, bool html_format) {
+    if (email.body == null && quote == null)
         return "";
     
     string quoted = "\n\n";
@@ -225,17 +230,16 @@ public string quote_email_for_forward(Geary.Email email, bool html_format) {
     
     quoted = quoted.replace("\n", "<br />");
     
-    if (email.body != null)
-        quoted += quote_body(email, false, html_format);
+    quoted += quote_body(email, quote, false, html_format);
     
     return quoted;
 }
 
-private string quote_body(Geary.Email email, bool use_quotes, bool html_format) {
+private string quote_body(Geary.Email email, string? quote, bool use_quotes, bool html_format) {
     string? body_text = "";
     
     try {
-        body_text = email.get_message().get_body(html_format);
+        body_text = quote ?? email.get_message().get_body(html_format);
     } catch (Error error) {
         debug("Could not get message text. %s", error.message);
     }

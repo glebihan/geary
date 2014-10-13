@@ -211,6 +211,63 @@ public class ConversationViewer : Gtk.Box {
         return messages.is_empty ? null : messages.last();
     }
     
+    public Geary.Email? get_selected_message(out string? quote) {
+        quote = null;
+        WebKit.DOM.Document document = web_view.get_dom_document();
+        WebKit.DOM.DOMSelection selection = document.default_view.get_selection();
+        if (selection.is_collapsed)
+            return get_last_message();
+        
+        WebKit.DOM.Element? anchor_element = selection.anchor_node as WebKit.DOM.Element;
+        Geary.Email? anchor_email = null;
+        if (anchor_element == null)
+            anchor_element = selection.anchor_node.parent_element;
+        if (anchor_element != null)
+            anchor_email = get_email_from_element(anchor_element);
+        
+        WebKit.DOM.Element? focus_element = selection.focus_node as WebKit.DOM.Element;
+        Geary.Email? focus_email = null;
+        if (focus_element == null)
+            focus_element = selection.focus_node.parent_element;
+        if (focus_element != null)
+            focus_email = get_email_from_element(focus_element);
+        
+        if (anchor_email != null && anchor_email == focus_email) {
+            try {
+                WebKit.DOM.Range range = selection.get_range_at(0);
+                WebKit.DOM.HTMLElement dummy = (WebKit.DOM.HTMLElement) document.create_element("div");
+                bool include_dummy = false;
+                WebKit.DOM.Node ancestor_node = range.get_common_ancestor_container();
+                WebKit.DOM.Element? ancestor = ancestor_node as WebKit.DOM.Element;
+                if (ancestor == null)
+                    ancestor = ancestor_node.get_parent_element();
+                // If the selection is part of a plain text message, we have to stick it in
+                // an appropriately styled div, so that new lines are preserved.
+                if (is_descendant_of(ancestor, ".plaintext")) {
+                    dummy.get_class_list().add("plaintext");
+                    dummy.set_attribute("style", "white-space: pre-wrap;");
+                    include_dummy = true;
+                }
+                dummy.append_child(range.clone_contents());
+                
+                // Remove the chrome we put around quotes, leaving only the blockquote element.
+                WebKit.DOM.NodeList quotes = dummy.query_selector_all(".quote_container");
+                for (int i = 0; i < quotes.length; i++) {
+                    WebKit.DOM.Element div = (WebKit.DOM.Element) quotes.item(i);
+                    WebKit.DOM.Element blockquote = div.query_selector("blockquote");
+                    div.get_parent_element().replace_child(blockquote, div);
+                }
+                
+                quote = include_dummy ? dummy.get_outer_html() : dummy.get_inner_html();
+                return anchor_email;
+            } catch (Error error) {
+                debug("Problem getting selected text: %s", error.message);
+            }
+        }
+        
+        return get_last_message();
+    }
+    
     // Removes all displayed e-mails from the view.
     private void clear(Geary.Folder? new_folder, Geary.AccountInformation? account_information) {
         // Remove all messages from DOM.
@@ -2119,6 +2176,11 @@ public class ConversationViewer : Gtk.Box {
                 out temporary_filename);
             FileUtils.set_contents(temporary_filename, source);
             FileUtils.close(temporary_handle);
+            
+            // ensure this file is only readable by the user ... this needs to be done after the
+            // file is closed
+            FileUtils.chmod(temporary_filename, (int) (Posix.S_IRUSR | Posix.S_IWUSR));
+            
             string temporary_uri = Filename.to_uri(temporary_filename, null);
             Gtk.show_uri(web_view.get_screen(), temporary_uri, Gdk.CURRENT_TIME);
         } catch (Error error) {
@@ -2155,6 +2217,10 @@ public class ConversationViewer : Gtk.Box {
                             body.offset_top + body.offset_height > scroll_top &&
                             body.offset_top + 28 < scroll_top + scroll_height) {  // 28 = 15 padding + 13 first line of text
                         emails.add(message.id);
+                        
+                        // since it can take some time for the new flags to round-trip back to
+                        // ConversationViewer's signal handlers, mark as manually read here
+                        mark_manual_read(message.id);
                     }
                 }
             } catch (Error error) {
