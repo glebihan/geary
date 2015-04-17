@@ -1,4 +1,4 @@
-/* Copyright 2013-2014 Yorba Foundation
+/* Copyright 2013-2015 Yorba Foundation
  *
  * This software is licensed under the GNU Lesser General Public License
  * (version 2.1 or later).  See the COPYING file in this distribution.
@@ -13,15 +13,20 @@ public class AccountDialog : Gtk.Dialog {
     private AccountDialogSpinnerPane spinner_pane;
     private AccountDialogRemoveConfirmPane remove_confirm_pane;
     private AccountDialogRemoveFailPane remove_fail_pane;
+    private AccountDialogEditAlternateEmailsPane edit_alternate_emails_pane;
+    private Gtk.HeaderBar headerbar = new Gtk.HeaderBar();
     
     public AccountDialog(Gtk.Window parent) {
         set_size_request(450, -1); // Sets min size.
-        title = _("Accounts");
+        headerbar.title = _("Accounts");
+        headerbar.show_close_button = true;
         set_transient_for(parent);
         set_modal(true);
+        set_titlebar (headerbar);
         get_content_area().margin_top = MARGIN;
         get_content_area().margin_left = MARGIN;
         get_content_area().margin_right = MARGIN;
+        get_content_area().margin_bottom = MARGIN;
         
         // Add pages to stack.
         account_list_pane = new AccountDialogAccountListPane(stack);
@@ -29,18 +34,20 @@ public class AccountDialog : Gtk.Dialog {
         spinner_pane = new AccountDialogSpinnerPane(stack);
         remove_confirm_pane = new AccountDialogRemoveConfirmPane(stack);
         remove_fail_pane = new AccountDialogRemoveFailPane(stack);
+        edit_alternate_emails_pane = new AccountDialogEditAlternateEmailsPane(stack);
         
         // Connect signals from pages.
-        account_list_pane.close.connect(on_close);
         account_list_pane.add_account.connect(on_add_account);
         account_list_pane.edit_account.connect(on_edit_account);
         account_list_pane.delete_account.connect(on_delete_account);
         add_edit_pane.ok.connect(on_save_add_or_edit);
         add_edit_pane.cancel.connect(on_cancel_back_to_list);
         add_edit_pane.size_changed.connect(() => { resize(1, 1); });
+        add_edit_pane.edit_alternate_emails.connect(on_edit_alternate_emails);
         remove_confirm_pane.ok.connect(on_delete_account_confirmed);
         remove_confirm_pane.cancel.connect(on_cancel_back_to_list);
         remove_fail_pane.ok.connect(on_cancel_back_to_list);
+        edit_alternate_emails_pane.done.connect(on_done_back_to_editor);
         
         // Set default page.
         account_list_pane.present();
@@ -49,10 +56,6 @@ public class AccountDialog : Gtk.Dialog {
         
         set_default_response(Gtk.ResponseType.OK);
         
-    }
-    
-    private void on_close() {
-        response(Gtk.ResponseType.CLOSE);
     }
     
     private void on_add_account() {
@@ -133,6 +136,15 @@ public class AccountDialog : Gtk.Dialog {
         }
     }
     
+    private void on_edit_alternate_emails(string email_address) {
+        Geary.AccountInformation? account_info = get_account_info_for_email(email_address);
+        if (account_info == null)
+            return;
+        
+        edit_alternate_emails_pane.set_account(account_info);
+        edit_alternate_emails_pane.present();
+    }
+    
     private void on_delete_account_confirmed(Geary.AccountInformation? account) {
         assert(account != null); // Should not be able to happen since we checked earlier.
         
@@ -197,6 +209,10 @@ public class AccountDialog : Gtk.Dialog {
     
     private void on_cancel_back_to_list() {
         account_list_pane.present();
+    }
+    
+    private void on_done_back_to_editor() {
+        add_edit_pane.present();
     }
 }
 

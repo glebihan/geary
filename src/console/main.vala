@@ -1,4 +1,4 @@
-/* Copyright 2011-2014 Yorba Foundation
+/* Copyright 2011-2015 Yorba Foundation
  *
  * This software is licensed under the GNU Lesser General Public License
  * (version 2.1 or later).  See the COPYING file in this distribution.
@@ -483,7 +483,8 @@ class ImapConsole : Gtk.Window {
         
         Gee.ArrayList<Geary.Imap.FetchDataSpecifier> data_items = new Gee.ArrayList<Geary.Imap.FetchDataSpecifier>();
         for (int ctr = 1; ctr < args.length; ctr++) {
-            Geary.Imap.FetchDataSpecifier data_type = Geary.Imap.FetchDataSpecifier.decode(args[ctr]);
+            Geary.Imap.StringParameter stringp = Geary.Imap.StringParameter.get_best_for(args[ctr]);
+            Geary.Imap.FetchDataSpecifier data_type = Geary.Imap.FetchDataSpecifier.from_parameter(stringp);
             data_items.add(data_type);
         }
         
@@ -542,8 +543,13 @@ class ImapConsole : Gtk.Window {
         foreach (string arg in args)
             criteria.and(new Geary.Imap.SearchCriterion.simple(arg));
         
-        cx.send_async.begin(new Geary.Imap.SearchCommand(criteria, cmd == "uid-search"),
-            null, on_searched);
+        Geary.Imap.SearchCommand search;
+        if (cmd == "uid-search")
+            search = new Geary.Imap.SearchCommand.uid(criteria);
+        else
+            search = new Geary.Imap.SearchCommand(criteria);
+        
+        cx.send_async.begin(search, null, on_searched);
     }
     
     private void on_searched(Object? source, AsyncResult result) {
@@ -578,8 +584,10 @@ class ImapConsole : Gtk.Window {
         status("Status %s".printf(args[0]));
         
         Geary.Imap.StatusDataType[] data_items = new Geary.Imap.StatusDataType[0];
-        for (int ctr = 1; ctr < args.length; ctr++)
-            data_items += Geary.Imap.StatusDataType.decode(args[ctr]);
+        for (int ctr = 1; ctr < args.length; ctr++) {
+            Geary.Imap.StringParameter stringp = Geary.Imap.StringParameter.get_best_for(args[ctr]);
+            data_items += Geary.Imap.StatusDataType.from_parameter(stringp);
+        }
         
         cx.send_async.begin(new Geary.Imap.StatusCommand(new Geary.Imap.MailboxSpecifier(args[0]),
             data_items), null, on_get_status);

@@ -1,4 +1,4 @@
-/* Copyright 2011-2014 Yorba Foundation
+/* Copyright 2011-2015 Yorba Foundation
  *
  * This software is licensed under the GNU Lesser General Public License
  * (version 2.1 or later).  See the COPYING file in this distribution.
@@ -7,11 +7,14 @@
 /**
  * Handles open/close for local folders.
  */
-public abstract class Geary.AbstractLocalFolder : Geary.AbstractFolder {
-    private int open_count = 0;
+public abstract class Geary.AbstractLocalFolder : Geary.Folder {
+    private ProgressMonitor _opening_monitor = new Geary.ReentrantProgressMonitor(Geary.ProgressType.ACTIVITY);
+    public override Geary.ProgressMonitor opening_monitor { get { return _opening_monitor; } }
     
-    public AbstractLocalFolder() {
-        opening_monitor = new Geary.SimpleProgressMonitor(Geary.ProgressType.ACTIVITY);
+    private int open_count = 0;
+    private Nonblocking.Semaphore closed_semaphore = new Nonblocking.Semaphore();
+    
+    protected AbstractLocalFolder() {
     }
     
     public override Geary.Folder.OpenState get_open_state() {
@@ -37,17 +40,27 @@ public abstract class Geary.AbstractLocalFolder : Geary.AbstractFolder {
         if (open_count++ > 0)
             return false;
         
+        closed_semaphore.reset();
+        
         notify_opened(Geary.Folder.OpenState.LOCAL, properties.email_total);
         
         return true;
     }
     
-    public override async void close_async(Cancellable? cancellable = null) throws Error {
+    public override async bool close_async(Cancellable? cancellable = null) throws Error {
         if (open_count == 0 || --open_count > 0)
-            return;
+            return false;
+        
+        closed_semaphore.blind_notify();
         
         notify_closed(Geary.Folder.CloseReason.LOCAL_CLOSE);
         notify_closed(Geary.Folder.CloseReason.FOLDER_CLOSED);
+        
+        return false;
+    }
+    
+    public override async void wait_for_close_async(Cancellable? cancellable = null) throws Error {
+        yield closed_semaphore.wait_async(cancellable);
     }
 }
 

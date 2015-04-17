@@ -1,16 +1,17 @@
-/* Copyright 2012-2014 Yorba Foundation
+/* Copyright 2012-2015 Yorba Foundation
  *
  * This software is licensed under the GNU Lesser General Public License
  * (version 2.1 or later).  See the COPYING file in this distribution.
  */
 
 private class Geary.ImapEngine.ReplayRemoval : Geary.ImapEngine.ReplayOperation {
-    public MinimalFolder owner;
-    public int remote_count;
-    public Imap.SequenceNumber position;
+    private MinimalFolder owner;
+    private int remote_count;
+    private Imap.SequenceNumber position;
     
     public ReplayRemoval(MinimalFolder owner, int remote_count, Imap.SequenceNumber position) {
-        base ("Removal", Scope.LOCAL_AND_REMOTE);
+        // remote error will cause folder to reconnect and re-normalize, making this remove moot
+        base ("Removal", Scope.LOCAL_AND_REMOTE, OnError.IGNORE);
         
         this.owner = owner;
         this.remote_count = remote_count;

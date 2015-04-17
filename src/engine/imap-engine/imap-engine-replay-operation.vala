@@ -1,10 +1,10 @@
-/* Copyright 2012-2014 Yorba Foundation
+/* Copyright 2012-2015 Yorba Foundation
  *
  * This software is licensed under the GNU Lesser General Public License
  * (version 2.1 or later).  See the COPYING file in this distribution.
  */
 
-private abstract class Geary.ImapEngine.ReplayOperation : Geary.BaseObject {
+private abstract class Geary.ImapEngine.ReplayOperation : Geary.BaseObject, Gee.Comparable<ReplayOperation> {
     /**
      * Scope specifies what type of operations (remote, local, or both) are needed by this operation.
      *
@@ -26,25 +26,29 @@ private abstract class Geary.ImapEngine.ReplayOperation : Geary.BaseObject {
     
     public enum Status {
         COMPLETED,
-        FAILED,
         CONTINUE
     }
     
-    private static int next_opnum = 0;
+    public enum OnError {
+        THROW,
+        RETRY,
+        IGNORE
+    }
     
     public string name { get; set; }
-    public int opnum { get; private set; }
+    public int64 submission_number { get; set; default = -1; }
     public Scope scope { get; private set; }
+    public OnError on_remote_error { get; protected set; }
+    public int remote_retry_count { get; set; default = 0; }
     public Error? err { get; private set; default = null; }
-    public bool failed { get; private set; default = false; }
-    public bool notified { get; private set; default = false; }
+    public bool notified { get { return semaphore.is_passed(); } }
     
     private Nonblocking.Semaphore semaphore = new Nonblocking.Semaphore();
     
-    public ReplayOperation(string name, Scope scope) {
+    public ReplayOperation(string name, Scope scope, OnError on_remote_error = OnError.THROW) {
         this.name = name;
-        opnum = next_opnum++;
         this.scope = scope;
+        this.on_remote_error = on_remote_error;
     }
     
     /**
@@ -61,7 +65,7 @@ private abstract class Geary.ImapEngine.ReplayOperation : Geary.BaseObject {
     public abstract void notify_remote_removed_position(Imap.SequenceNumber removed);
     
     /**
-     * Notify the operation that a message has been removed by position (SequenceNumber).
+     * Notify the operation that a message has been removed by UID (EmailIdentifier).
      *
      * This method is called only when the ReplayOperation is blocked waiting to execute and it's
      * discovered that the supplied email(s) are no longer on the server.
@@ -97,10 +101,11 @@ private abstract class Geary.ImapEngine.ReplayOperation : Geary.BaseObject {
      *
      * Returns:
      *   COMPLETED: the operation has completed and no further calls should be made.
-     *   FAILED: the operation has failed.  (An exception may be thrown for similar effect.)
-     *     backout_local_async() will *not* be executed.
      *   CONTINUE: The local operation has completed and the remote portion must be executed as
      *      well.  This is treated as COMPLETED if get_scope() returns LOCAL_ONLY.
+     *
+     * If Error thrown:
+     *   backout_local_async() will *not* be executed.
      */
     public abstract async Status replay_local_async() throws Error;
     
@@ -109,9 +114,10 @@ private abstract class Geary.ImapEngine.ReplayOperation : Geary.BaseObject {
      *
      * Returns:
      *   COMPLETED: the operation has completed and no further calls should be made.
-     *   FAILED: the operation has failed.  (An exception may be thrown for similar effect.)
-     *     backout_local_async() will be executed only if scope is LOCAL_AND_REMOTE.
      *   CONTINUE: Treated as COMPLETED.
+     *
+     * If Error thrown:
+     *   backout_local_async() will be executed only if scope is LOCAL_AND_REMOTE.
      */
     public abstract async Status replay_remote_async() throws Error;
     
@@ -123,23 +129,19 @@ private abstract class Geary.ImapEngine.ReplayOperation : Geary.BaseObject {
     
     /**
      * Completes when the operation has completed execution.  If the operation threw an error
-     * during execution, it will be thrown here.  If the operation failed, this returns false.
+     * during execution, it will be thrown here.
      */
-    public async bool wait_for_ready_async(Cancellable? cancellable = null) throws Error {
+    public async void wait_for_ready_async(Cancellable? cancellable = null) throws Error {
         yield semaphore.wait_async(cancellable);
         
         if (err != null)
             throw err;
-        
-        return failed;
     }
     
-    internal void notify_ready(bool failed, Error? err) {
-        assert(!notified);
+    // Can only be called once
+    internal void notify_ready(Error? err) {
+        assert(!semaphore.is_passed());
         
-        notified = true;
-        
-        this.failed = failed;
         this.err = err;
         
         try {
@@ -151,11 +153,22 @@ private abstract class Geary.ImapEngine.ReplayOperation : Geary.BaseObject {
     
     public abstract string describe_state();
     
+    // The Comparable interface is merely to ensure the ReplayQueue sorts operations by their
+    // submission order, ensuring that retry operations are retried in order of submissions
+    public int compare_to(ReplayOperation other) {
+        assert(submission_number >= 0);
+        assert(other.submission_number >= 0);
+        
+        return (int) (submission_number - other.submission_number).clamp(-1, 1);
+    }
+    
     public string to_string() {
         string state = describe_state();
         
-        return (String.is_empty(state)) ? "[%d] %s".printf(opnum, name)
-            : "[%d] %s: %s".printf(opnum, name, state);
+        return String.is_empty(state)
+            ? "[%s] %s remote_retry_count=%d".printf(submission_number.to_string(), name, remote_retry_count)
+            : "[%s] %s: %s remote_retry_count=%d".printf(submission_number.to_string(), name, state,
+                remote_retry_count);
     }
 }
 

@@ -1,4 +1,4 @@
-/* Copyright 2013-2014 Yorba Foundation
+/* Copyright 2013-2015 Yorba Foundation
  *
  * This software is licensed under the GNU Lesser General Public License
  * (version 2.1 or later).  See the COPYING file in this distribution.
@@ -11,7 +11,8 @@ public enum Geary.ProgressType {
     AGGREGATED,
     ACTIVITY,
     DB_UPGRADE,
-    SEARCH_INDEX
+    SEARCH_INDEX,
+    DB_VACUUM
 }
 
 /**
@@ -82,7 +83,7 @@ public class Geary.ReentrantProgressMonitor : Geary.ProgressMonitor {
     }
     
     /**
-     * @inheritDoc
+     * {@inheritDoc}
      *
      * Unlike the base class implementation, this may be called multiple times successively without
      * a problem, but each must be matched by a {@link notify_finish} to completely stop the
@@ -96,7 +97,7 @@ public class Geary.ReentrantProgressMonitor : Geary.ProgressMonitor {
     }
     
     /**
-     * @inheritDoc
+     * {@inheritDoc}
      *
      * Unlike the base class implementation, this may be called multiple times successively as
      * long as they were matched by a prior {@link notify_start}.

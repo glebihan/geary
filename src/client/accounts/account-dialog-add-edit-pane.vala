@@ -1,4 +1,4 @@
-/* Copyright 2013-2014 Yorba Foundation
+/* Copyright 2013-2015 Yorba Foundation
  *
  * This software is licensed under the GNU Lesser General Public License
  * (version 2.1 or later).  See the COPYING file in this distribution.
@@ -16,6 +16,8 @@ public class AccountDialogAddEditPane : AccountDialogPane {
     public signal void cancel();
     
     public signal void size_changed();
+    
+    public signal void edit_alternate_emails(string email_address);
     
     public AccountDialogAddEditPane(Gtk.Stack stack) {
         base(stack);
@@ -35,10 +37,11 @@ public class AccountDialogAddEditPane : AccountDialogPane {
         ok_button.clicked.connect(on_ok);
         cancel_button.clicked.connect(() => { cancel(); });
         
-        add_edit_page.size_changed.connect(() => { size_changed(); } );
+        add_edit_page.size_changed.connect(() => { size_changed(); });
+        add_edit_page.edit_alternate_emails.connect(() => { edit_alternate_emails(add_edit_page.email_address); });
         
         pack_start(add_edit_page);
-        pack_start(button_box);
+        pack_start(button_box, false, false);
         
         // Default mode is Welcome.
         set_mode(AddEditPage.PageMode.WELCOME);

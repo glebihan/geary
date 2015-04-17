@@ -1,4 +1,4 @@
-/* Copyright 2011-2014 Yorba Foundation
+/* Copyright 2011-2015 Yorba Foundation
  *
  * This software is licensed under the GNU Lesser General Public License
  * (version 2.1 or later).  See the COPYING file in this distribution.
@@ -10,7 +10,11 @@ public class Configuration {
     public const string WINDOW_HEIGHT_KEY = "window-height";
     public const string WINDOW_MAXIMIZE_KEY = "window-maximize";
     public const string FOLDER_LIST_PANE_POSITION_KEY = "folder-list-pane-position";
+    public const string FOLDER_LIST_PANE_POSITION_HORIZONTAL_KEY = "folder-list-pane-position-horizontal";
+    public const string FOLDER_LIST_PANE_POSITION_VERTICAL_KEY = "folder-list-pane-position-vertical";
+    public const string FOLDER_LIST_PANE_HORIZONTAL_KEY = "folder-list-pane-horizontal";
     public const string MESSAGES_PANE_POSITION_KEY = "messages-pane-position";
+    public const string COMPOSER_PANE_POSITION_KEY = "composer-pane-position";
     public const string AUTOSELECT_KEY = "autoselect";
     public const string DISPLAY_PREVIEW_KEY = "display-preview";
     public const string SPELL_CHECK_KEY = "spell-check";
@@ -37,12 +41,30 @@ public class Configuration {
         get { return settings.get_boolean(WINDOW_MAXIMIZE_KEY); }
     }
     
-    public int folder_list_pane_position {
+    public int folder_list_pane_position_old {
         get { return settings.get_int(FOLDER_LIST_PANE_POSITION_KEY); }
+    }
+    
+    public int folder_list_pane_position_horizontal {
+        get { return settings.get_int(FOLDER_LIST_PANE_POSITION_HORIZONTAL_KEY); }
+        set { settings.set_int(FOLDER_LIST_PANE_POSITION_HORIZONTAL_KEY, value); }
+    }
+    
+    public int folder_list_pane_position_vertical {
+        get { return settings.get_int(FOLDER_LIST_PANE_POSITION_VERTICAL_KEY); }
+    }
+    
+    public bool folder_list_pane_horizontal {
+        get { return settings.get_boolean(FOLDER_LIST_PANE_HORIZONTAL_KEY); }
     }
     
     public int messages_pane_position {
         get { return settings.get_int(MESSAGES_PANE_POSITION_KEY); }
+        set { settings.set_int(MESSAGES_PANE_POSITION_KEY, value); }
+    }
+    
+    public int composer_pane_position {
+        get { return settings.get_int(COMPOSER_PANE_POSITION_KEY); }
     }
     
     public bool autoselect {
@@ -74,7 +96,7 @@ public class Configuration {
     private const string TIME_FORMAT_KEY = "time-format";
     public Date.ClockFormat clock_format {
         get {
-            if (indicator_datetime != null) {
+            if (GearyApplication.instance.is_running_unity && indicator_datetime != null) {
                 string format = indicator_datetime.get_string(TIME_FORMAT_KEY);
                 if (format == "12-hour")
                     return Date.ClockFormat.TWELVE_HOURS;
@@ -134,6 +156,44 @@ public class Configuration {
     private void set_boolean(string name, bool value) {
         if (!settings.set_boolean(name, value))
             message("Unable to set configuration value %s = %s", name, value.to_string());
+    }
+    
+    public Geary.SearchQuery.Strategy get_search_strategy() {
+        switch (settings.get_string("search-strategy").down()) {
+            case "exact":
+                return Geary.SearchQuery.Strategy.EXACT;
+            
+            case "aggressive":
+                return Geary.SearchQuery.Strategy.AGGRESSIVE;
+            
+            case "horizon":
+                return Geary.SearchQuery.Strategy.HORIZON;
+            
+            case "conservative":
+            default:
+                return Geary.SearchQuery.Strategy.CONSERVATIVE;
+        }
+    }
+    
+    public void set_search_strategy(Geary.SearchQuery.Strategy strategy) {
+        switch (strategy) {
+            case Geary.SearchQuery.Strategy.EXACT:
+                settings.set_string("search-strategy", "exact");
+            break;
+            
+            case Geary.SearchQuery.Strategy.AGGRESSIVE:
+                settings.set_string("search-strategy", "aggressive");
+            break;
+            
+            case Geary.SearchQuery.Strategy.HORIZON:
+                settings.set_string("search-strategy", "horizon");
+            break;
+            
+            case Geary.SearchQuery.Strategy.CONSERVATIVE:
+            default:
+                settings.set_string("search-strategy", "conservative");
+            break;
+        }
     }
 }
 

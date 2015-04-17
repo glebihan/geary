@@ -1,4 +1,4 @@
-/* Copyright 2011-2014 Yorba Foundation
+/* Copyright 2011-2015 Yorba Foundation
  *
  * This software is licensed under the GNU Lesser General Public License
  * (version 2.1 or later).  See the COPYING file in this distribution.
@@ -74,13 +74,8 @@ public class Geary.Imap.Command : RootParameters {
         add(tag);
         add(new AtomParameter(name));
         if (args != null) {
-            foreach (string arg in args) {
-                StringParameter? stringp = StringParameter.get_best_for(arg);
-                if (stringp != null)
-                    add(stringp);
-                else
-                    add(new LiteralParameter(new Memory.StringBuffer(arg)));
-            }
+            foreach (string arg in args)
+                add(Parameter.get_for_string(arg));
         }
     }
     
@@ -107,7 +102,7 @@ public class Geary.Imap.Command : RootParameters {
     }
     
     public bool has_name(string name) {
-        return this.name.down() == name.down();
+        return Ascii.stri_equal(this.name, name);
     }
     
     public override void serialize(Serializer ser, Tag tag) throws Error {

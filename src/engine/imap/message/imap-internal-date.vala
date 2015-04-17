@@ -1,4 +1,4 @@
-/* Copyright 2013-2014 Yorba Foundation
+/* Copyright 2013-2015 Yorba Foundation
  *
  * This software is licensed under the GNU Lesser General Public License
  * (version 2.1 or later).  See the COPYING file in this distribution.
@@ -70,7 +70,7 @@ public class Geary.Imap.InternalDate : Geary.MessageData.AbstractMessageData, Ge
         
         // check month (this catches localization problems)
         int month = -1;
-        string mon_down = ((string) mon).down();
+        string mon_down = Ascii.strdown(((string) mon));
         for (int ctr = 0; ctr < EN_US_MON_DOWN.length; ctr++) {
             if (mon_down == EN_US_MON_DOWN[ctr]) {
                 month = ctr;
@@ -98,7 +98,7 @@ public class Geary.Imap.InternalDate : Geary.MessageData.AbstractMessageData, Ge
      * Returns the {@link InternalDate} as a {@link Parameter}.
      */
     public Parameter to_parameter() {
-        return StringParameter.get_best_for(serialize());
+        return Parameter.get_for_string(serialize());
     }
     
     /**
@@ -107,7 +107,7 @@ public class Geary.Imap.InternalDate : Geary.MessageData.AbstractMessageData, Ge
      * @see serialize_for_search
      */
     public Parameter to_search_parameter() {
-        return StringParameter.get_best_for(serialize_for_search());
+        return Parameter.get_for_string(serialize_for_search());
     }
     
     /**

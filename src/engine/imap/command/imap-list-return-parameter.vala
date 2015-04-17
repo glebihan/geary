@@ -1,4 +1,4 @@
-/* Copyright 2014 Yorba Foundation
+/* Copyright 2014-2015 Yorba Foundation
  *
  * This software is licensed under the GNU Lesser General Public License
  * (version 2.1 or later).  See the COPYING file in this distribution.
@@ -17,7 +17,7 @@
 
 public class Geary.Imap.ListReturnParameter : ListParameter {
     /**
-     * See https://tools.ietf.org/html/rfc6154
+     * See [[https://tools.ietf.org/html/rfc6154]]
      */
     public const string SPECIAL_USE = "special-use";
     
@@ -30,7 +30,7 @@ public class Geary.Imap.ListReturnParameter : ListParameter {
     }
     
     public void add_special_use() {
-        add(StringParameter.get_best_for(SPECIAL_USE));
+        add(StringParameter.get_best_for_unchecked(SPECIAL_USE));
     }
 }
 

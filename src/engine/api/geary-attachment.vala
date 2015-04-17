@@ -1,4 +1,4 @@
-/* Copyright 2011-2014 Yorba Foundation
+/* Copyright 2011-2015 Yorba Foundation
  *
  * This software is licensed under the GNU Lesser General Public License
  * (version 2.1 or later).  See the COPYING file in this distribution.
@@ -43,7 +43,7 @@ public abstract class Geary.Attachment : BaseObject {
     public int64 filesize { get; private set; }
     
     /**
-     * The {@link Disposition} of the attachment, as specified by the {@link Email}.
+     * The {@link Mime.ContentDisposition} of the attachment, as specified by the {@link Email}.
      *
      * See [[https://tools.ietf.org/html/rfc2183]]
      */

@@ -1,4 +1,4 @@
-/* Copyright 2013-2014 Yorba Foundation
+/* Copyright 2013-2015 Yorba Foundation
  *
  * This software is licensed under the GNU Lesser General Public License
  * (version 2.1 or later).  See the COPYING file in this distribution.
@@ -70,7 +70,7 @@ public class Geary.Imap.MailboxSpecifier : BaseObject, Gee.Hashable<MailboxSpeci
      * @see is_canonical_inbox_name
      */
     public static bool is_inbox_name(string name) {
-        return name.up() == CANONICAL_INBOX_NAME;
+        return Ascii.stri_equal(name, CANONICAL_INBOX_NAME);
     }
     
     /**
@@ -85,7 +85,7 @@ public class Geary.Imap.MailboxSpecifier : BaseObject, Gee.Hashable<MailboxSpeci
      * @see is_inbox_name
      */
     public static bool is_canonical_inbox_name(string name) {
-        return name == CANONICAL_INBOX_NAME;
+        return Ascii.str_equal(name, CANONICAL_INBOX_NAME);
     }
     
     /**
@@ -183,7 +183,7 @@ public class Geary.Imap.MailboxSpecifier : BaseObject, Gee.Hashable<MailboxSpeci
     }
     
     public uint hash() {
-        return is_inbox ? String.stri_hash(name) : name.hash();
+        return is_inbox ? Ascii.stri_hash(name) : Ascii.str_hash(name);
     }
     
     public bool equal_to(MailboxSpecifier other) {
@@ -191,9 +191,9 @@ public class Geary.Imap.MailboxSpecifier : BaseObject, Gee.Hashable<MailboxSpeci
             return true;
         
         if (is_inbox)
-            return String.stri_equal(name, other.name);
+            return Ascii.stri_equal(name, other.name);
         
-        return name == other.name;
+        return Ascii.str_equal(name, other.name);
     }
     
     public int compare_to(MailboxSpecifier other) {
@@ -203,7 +203,7 @@ public class Geary.Imap.MailboxSpecifier : BaseObject, Gee.Hashable<MailboxSpeci
         if (is_inbox && other.is_inbox)
             return 0;
         
-        return strcmp(name, other.name);
+        return Ascii.strcmp(name, other.name);
     }
     
     public string to_string() {

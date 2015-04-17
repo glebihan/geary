@@ -1,11 +1,9 @@
 # Geary build script
-# Copyright 2011-2014 Yorba Foundation
+# Copyright 2011-2015 Yorba Foundation
 
 set(ENGINE_SRC
-engine/abstract/geary-abstract-account.vala
-engine/abstract/geary-abstract-folder.vala
-engine/abstract/geary-abstract-local-folder.vala
 
+engine/api/geary-abstract-local-folder.vala
 engine/api/geary-account.vala
 engine/api/geary-account-information.vala
 engine/api/geary-aggregated-folder-properties.vala
@@ -31,6 +29,7 @@ engine/api/geary-folder-properties.vala
 engine/api/geary-folder-supports-archive.vala
 engine/api/geary-folder-supports-copy.vala
 engine/api/geary-folder-supports-create.vala
+engine/api/geary-folder-supports-empty.vala
 engine/api/geary-folder-supports-mark.vala
 engine/api/geary-folder-supports-move.vala
 engine/api/geary-folder-supports-remove.vala
@@ -38,6 +37,7 @@ engine/api/geary-logging.vala
 engine/api/geary-named-flag.vala
 engine/api/geary-named-flags.vala
 engine/api/geary-progress-monitor.vala
+engine/api/geary-revokable.vala
 engine/api/geary-search-folder.vala
 engine/api/geary-search-query.vala
 engine/api/geary-service.vala
@@ -46,6 +46,7 @@ engine/api/geary-special-folder-type.vala
 
 engine/app/app-conversation.vala
 engine/app/app-conversation-monitor.vala
+engine/app/app-draft-manager.vala
 engine/app/app-email-store.vala
 
 engine/app/conversation-monitor/app-append-operation.vala
@@ -168,9 +169,15 @@ engine/imap-db/imap-db-contact.vala
 engine/imap-db/imap-db-database.vala
 engine/imap-db/imap-db-email-identifier.vala
 engine/imap-db/imap-db-folder.vala
+engine/imap-db/imap-db-gc.vala
 engine/imap-db/imap-db-message-addresses.vala
 engine/imap-db/imap-db-message-row.vala
-engine/imap-db/imap-db-search-email-identifier.vala
+engine/imap-db/search/imap-db-search-email-identifier.vala
+engine/imap-db/search/imap-db-search-folder.vala
+engine/imap-db/search/imap-db-search-folder-properties.vala
+engine/imap-db/search/imap-db-search-folder-root.vala
+engine/imap-db/search/imap-db-search-query.vala
+engine/imap-db/search/imap-db-search-term.vala
 engine/imap-db/outbox/smtp-outbox-email-identifier.vala
 engine/imap-db/outbox/smtp-outbox-email-properties.vala
 engine/imap-db/outbox/smtp-outbox-folder.vala
@@ -188,10 +195,15 @@ engine/imap-engine/imap-engine-generic-folder.vala
 engine/imap-engine/imap-engine-minimal-folder.vala
 engine/imap-engine/imap-engine-replay-operation.vala
 engine/imap-engine/imap-engine-replay-queue.vala
+engine/imap-engine/imap-engine-revokable-move.vala
+engine/imap-engine/imap-engine-revokable-committed-move.vala
 engine/imap-engine/imap-engine-send-replay-operation.vala
 engine/imap-engine/gmail/imap-engine-gmail-account.vala
+engine/imap-engine/gmail/imap-engine-gmail-all-mail-folder.vala
+engine/imap-engine/gmail/imap-engine-gmail-drafts-folder.vala
 engine/imap-engine/gmail/imap-engine-gmail-folder.vala
 engine/imap-engine/gmail/imap-engine-gmail-search-folder.vala
+engine/imap-engine/gmail/imap-engine-gmail-spam-trash-folder.vala
 engine/imap-engine/other/imap-engine-other-account.vala
 engine/imap-engine/other/imap-engine-other-folder.vala
 engine/imap-engine/outlook/imap-engine-outlook-account.vala
@@ -200,16 +212,20 @@ engine/imap-engine/outlook/imap-engine-outlook-drafts-folder.vala
 engine/imap-engine/replay-ops/imap-engine-abstract-list-email.vala
 engine/imap-engine/replay-ops/imap-engine-copy-email.vala
 engine/imap-engine/replay-ops/imap-engine-create-email.vala
+engine/imap-engine/replay-ops/imap-engine-empty-folder.vala
 engine/imap-engine/replay-ops/imap-engine-fetch-email.vala
 engine/imap-engine/replay-ops/imap-engine-list-email-by-id.vala
 engine/imap-engine/replay-ops/imap-engine-list-email-by-sparse-id.vala
 engine/imap-engine/replay-ops/imap-engine-mark-email.vala
-engine/imap-engine/replay-ops/imap-engine-move-email.vala
+engine/imap-engine/replay-ops/imap-engine-move-email-commit.vala
+engine/imap-engine/replay-ops/imap-engine-move-email-prepare.vala
+engine/imap-engine/replay-ops/imap-engine-move-email-revoke.vala
 engine/imap-engine/replay-ops/imap-engine-remove-email.vala
 engine/imap-engine/replay-ops/imap-engine-replay-append.vala
 engine/imap-engine/replay-ops/imap-engine-replay-disconnect.vala
 engine/imap-engine/replay-ops/imap-engine-replay-removal.vala
 engine/imap-engine/replay-ops/imap-engine-server-search-email.vala
+engine/imap-engine/replay-ops/imap-engine-user-close.vala
 engine/imap-engine/yahoo/imap-engine-yahoo-account.vala
 engine/imap-engine/yahoo/imap-engine-yahoo-folder.vala
 
@@ -230,6 +246,7 @@ engine/mime/mime-content-type.vala
 engine/mime/mime-data-format.vala
 engine/mime/mime-disposition-type.vala
 engine/mime/mime-error.vala
+engine/mime/mime-multipart-subtype.vala
 
 engine/nonblocking/nonblocking-abstract-semaphore.vala
 engine/nonblocking/nonblocking-batch.vala
@@ -252,7 +269,6 @@ engine/rfc822/rfc822-message.vala
 engine/rfc822/rfc822-message-data.vala
 engine/rfc822/rfc822-utils.vala
 
-engine/smtp/smtp-abstract-authenticator.vala
 engine/smtp/smtp-authenticator.vala
 engine/smtp/smtp-capabilities.vala
 engine/smtp/smtp-client-connection.vala
@@ -272,6 +288,7 @@ engine/state/state-machine-descriptor.vala
 engine/state/state-machine.vala
 engine/state/state-mapping.vala
 
+engine/util/util-ascii.vala
 engine/util/util-collection.vala
 engine/util/util-converter.vala
 engine/util/util-files.vala
@@ -304,6 +321,7 @@ client/application/secret-mediator.vala
 client/accounts/account-dialog.vala
 client/accounts/account-dialog-account-list-pane.vala
 client/accounts/account-dialog-add-edit-pane.vala
+client/accounts/account-dialog-edit-alternate-emails-pane.vala
 client/accounts/account-dialog-pane.vala
 client/accounts/account-dialog-remove-confirm-pane.vala
 client/accounts/account-dialog-remove-fail-pane.vala
@@ -322,10 +340,12 @@ client/components/main-window.vala
 client/components/monitored-progress-bar.vala
 client/components/monitored-spinner.vala
 client/components/pill-toolbar.vala
+client/components/search-bar.vala
 client/components/status-bar.vala
 client/components/stock.vala
 client/components/stylish-webview.vala
 
+client/composer/composer-box.vala
 client/composer/composer-container.vala
 client/composer/composer-embed.vala
 client/composer/composer-headerbar.vala
@@ -519,7 +539,7 @@ else ()
     )
 endif ()
 
-set(TARGET_GLIB 2.32)
+set(TARGET_GLIB 2.34)
 
 pkg_check_modules(DEPS REQUIRED
     gthread-2.0
@@ -530,7 +550,7 @@ pkg_check_modules(DEPS REQUIRED
     libnotify>=0.7.5
     libcanberra>=0.28
     sqlite3>=3.7.4
-    gmime-2.6>=2.6.0
+    gmime-2.6>=2.6.14
     libsecret-1>=0.11
     libxml-2.0>=2.7.8
     gcr-3>=3.10.1
@@ -583,14 +603,14 @@ else ()
     message(STATUS "Reference tracking: OFF")
 endif ()
 
-if (ENABLE_UNITY)
-    message(STATUS "Unity interface changes: ON")
+if (DISABLE_POODLE)
+    message(STATUS "POODLE SSLv3 fix: OFF")
     set(EXTRA_VALA_OPTIONS
         ${EXTRA_VALA_OPTIONS}
-        --define=ENABLE_UNITY
+        --define=DISABLE_POODLE
     )
 else ()
-    message(STATUS "Unity interface changes: OFF")
+    message(STATUS "POODLE SSLv3 fix: ON")
 endif ()
 
 set(LIB_PATHS ${DEPS_LIBRARY_DIRS})
@@ -727,7 +747,7 @@ add_custom_target(
     WORKING_DIRECTORY
         ${CMAKE_SOURCE_DIR}/src
     COMMAND
-        ${VALADOC_EXECUTABLE} --force --no-protected -b ${CMAKE_CURRENT_SOURCE_DIR} -o ${CMAKE_SOURCE_DIR}/valadoc --package-name=geary --package-version=${VERSION} ${ENGINE_SRC} ${valadoc_pkg_opts} --vapidir=${CMAKE_SOURCE_DIR}/bindings/vapi
+        ${VALADOC_EXECUTABLE} --force --no-protected --target-glib=${TARGET_GLIB} -b ${CMAKE_CURRENT_SOURCE_DIR} -o ${CMAKE_SOURCE_DIR}/valadoc --package-name=geary --package-version=${VERSION} ${ENGINE_SRC} ${valadoc_pkg_opts} --vapidir=${CMAKE_SOURCE_DIR}/bindings/vapi
 )
 
 ## Make clean: remove copied files

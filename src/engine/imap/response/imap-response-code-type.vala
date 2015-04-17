@@ -1,4 +1,4 @@
-/* Copyright 2011-2014 Yorba Foundation
+/* Copyright 2011-2015 Yorba Foundation
  *
  * This software is licensed under the GNU Lesser General Public License
  * (version 2.1 or later).  See the COPYING file in this distribution.
@@ -23,6 +23,7 @@ public class Geary.Imap.ResponseCodeType : BaseObject, Gee.Hashable<ResponseCode
     public const string BADCHARSET = "badcharset";
     public const string CAPABILITY = "capability";
     public const string CLIENTBUG = "clientbug";
+    public const string COPYUID = "copyuid";
     public const string MYRIGHTS = "myrights";
     public const string NEWNAME = "newname";
     public const string NONEXISTANT = "nonexistant";
@@ -61,21 +62,21 @@ public class Geary.Imap.ResponseCodeType : BaseObject, Gee.Hashable<ResponseCode
      * an {link ResponseCodeType}.
      */
     public ResponseCodeType.from_parameter(StringParameter stringp) throws ImapError {
-        init(stringp.value);
+        init(stringp.ascii);
     }
     
-    private void init(string str) throws ImapError {
+    private void init(string ascii) throws ImapError {
         // note that is_quoting_required() also catches empty strings (as they require quoting)
-        if (DataFormat.is_quoting_required(str) != DataFormat.Quoting.OPTIONAL)
-            throw new ImapError.INVALID("\"%s\" cannot be represented as a ResponseCodeType", str);
+        if (DataFormat.is_quoting_required(ascii) != DataFormat.Quoting.OPTIONAL)
+            throw new ImapError.INVALID("\"%s\" cannot be represented as a ResponseCodeType", ascii);
         
         // store lowercased so it's easily compared with const strings above
-        original = str;
-        value = str.down();
+        original = ascii;
+        value = Ascii.strdown(ascii);
     }
     
     public bool is_value(string str) {
-        return String.stri_equal(value, str);
+        return Ascii.stri_equal(value, str);
     }
     
     public StringParameter to_parameter() {
@@ -83,11 +84,11 @@ public class Geary.Imap.ResponseCodeType : BaseObject, Gee.Hashable<ResponseCode
     }
     
     public bool equal_to(ResponseCodeType other) {
-        return (this == other) ? true : String.stri_equal(value, other.value);
+        return (this == other) ? true : Ascii.stri_equal(value, other.value);
     }
     
     public uint hash() {
-        return String.stri_hash(value);
+        return Ascii.stri_hash(value);
     }
     
     public string to_string() {

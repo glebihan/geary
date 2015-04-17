@@ -1,4 +1,4 @@
-/* Copyright 2013-2014 Yorba Foundation
+/* Copyright 2013-2015 Yorba Foundation
  *
  * This software is licensed under the GNU Lesser General Public License
  * (version 2.1 or later).  See the COPYING file in this distribution.
@@ -85,23 +85,23 @@ public class Geary.Mime.ContentType : Geary.BaseObject {
     /**
      * Compares the {@link media_type} with the supplied type.
      *
-     * An asterisk ("*") or {@link WILDCARD) are accepted, which will always return true.
+     * An asterisk ("*") or {@link WILDCARD} are accepted, which will always return true.
      *
      * @see is_type
      */
     public bool has_media_type(string media_type) {
-        return (media_type != WILDCARD) ? String.stri_equal(this.media_type, media_type) : true;
+        return (media_type != WILDCARD) ? Ascii.stri_equal(this.media_type, media_type) : true;
     }
     
     /**
      * Compares the {@link media_subtype} with the supplied subtype.
      *
-     * An asterisk ("*") or {@link WILDCARD) are accepted, which will always return true.
+     * An asterisk ("*") or {@link WILDCARD} are accepted, which will always return true.
      *
      * @see is_type
      */
     public bool has_media_subtype(string media_subtype) {
-        return (media_subtype != WILDCARD) ? String.stri_equal(this.media_subtype, media_subtype) : true;
+        return (media_subtype != WILDCARD) ? Ascii.stri_equal(this.media_subtype, media_subtype) : true;
     }
     
     /**

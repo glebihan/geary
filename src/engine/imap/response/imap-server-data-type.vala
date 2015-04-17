@@ -1,4 +1,4 @@
-/* Copyright 2011-2014 Yorba Foundation
+/* Copyright 2011-2015 Yorba Foundation
  *
  * This software is licensed under the GNU Lesser General Public License
  * (version 2.1 or later).  See the COPYING file in this distribution.
@@ -63,8 +63,13 @@ public enum Geary.Imap.ServerDataType {
         }
     }
     
-    public static ServerDataType decode(string value) throws ImapError {
-        switch (value.down()) {
+    /**
+     * Convert a {@link StringParameter} into a ServerDataType.
+     *
+     * @throws ImapError.PARSE_ERROR if the StringParameter is not recognized as a ServerDataType.
+     */
+    public static ServerDataType from_parameter(StringParameter param) throws ImapError {
+        switch (param.as_lower()) {
             case "capability":
                 return CAPABILITY;
             
@@ -100,21 +105,12 @@ public enum Geary.Imap.ServerDataType {
                 return XLIST;
             
             default:
-                throw new ImapError.PARSE_ERROR("\"%s\" is not a valid server data type", value);
+                throw new ImapError.PARSE_ERROR("\"%s\" is not a valid server data type", param.to_string());
         }
     }
     
     public StringParameter to_parameter() {
         return new AtomParameter(to_string());
-    }
-    
-    /**
-     * Convert a {@link StringParameter} into a ServerDataType.
-     *
-     * @throws ImapError.PARSE_ERROR if the StringParameter is not recognized as a ServerDataType.
-     */
-    public static ServerDataType from_parameter(StringParameter param) throws ImapError {
-        return decode(param.value);
     }
     
     /**
@@ -128,7 +124,7 @@ public enum Geary.Imap.ServerDataType {
     public static ServerDataType from_response(RootParameters root) throws ImapError {
         StringParameter? firstparam = root.get_if_string(1);
         if (firstparam != null) {
-            switch (firstparam.value.down()) {
+            switch (firstparam.as_lower()) {
                 case "capability":
                     return CAPABILITY;
                 
@@ -158,7 +154,7 @@ public enum Geary.Imap.ServerDataType {
         
         StringParameter? secondparam = root.get_if_string(2);
         if (secondparam != null) {
-            switch (secondparam.value.down()) {
+            switch (secondparam.as_lower()) {
                 case "exists":
                     return EXISTS;
                 

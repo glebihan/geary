@@ -1,4 +1,4 @@
-/* Copyright 2011-2014 Yorba Foundation
+/* Copyright 2011-2015 Yorba Foundation
  *
  * This software is licensed under the GNU Lesser General Public License
  * (version 2.1 or later).  See the COPYING file in this distribution.
@@ -20,7 +20,7 @@ public interface Geary.Imap.MessageData : Geary.MessageData.AbstractMessageData 
 }
 
 public class Geary.Imap.RFC822Size : Geary.RFC822.Size, Geary.Imap.MessageData {
-    public RFC822Size(long value) {
+    public RFC822Size(int64 value) {
         base (value);
     }
 }

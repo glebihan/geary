@@ -1,4 +1,4 @@
-/* Copyright 2011-2014 Yorba Foundation
+/* Copyright 2011-2015 Yorba Foundation
  *
  * This software is licensed under the GNU Lesser General Public License
  * (version 2.1 or later).  See the COPYING file in this distribution.
@@ -24,9 +24,9 @@ public abstract class Geary.EmailProperties : BaseObject {
     /**
      * Total size of the email (header and body) in bytes.
      */
-    public long total_bytes { get; protected set; }
+    public int64 total_bytes { get; protected set; }
     
-    public EmailProperties(DateTime date_received, long total_bytes) {
+    public EmailProperties(DateTime date_received, int64 total_bytes) {
         this.date_received = date_received;
         this.total_bytes = total_bytes;
     }

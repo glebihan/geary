@@ -1,10 +1,26 @@
-/* Copyright 2011-2014 Yorba Foundation
+/* Copyright 2011-2015 Yorba Foundation
  *
  * This software is licensed under the GNU Lesser General Public License
  * (version 2.1 or later).  See the COPYING file in this distribution.
  */
 
-public interface Geary.Account : BaseObject {
+/**
+ * Account is the basic interface to the user's email account, {@link Folder}s, and various signals,
+ * monitors, and notifications of account activity.
+ *
+ * In addition to providing an interface to the various Folders, Account offers aggregation signals
+ * indicating changes to all Folders as they're discovered.  Because some mail interfaces don't
+ * provide account-wide notification, these signals may only be fired when the Folder is open,
+ * which sometimes happens in the background as background synchronization occurs.
+ *
+ * Accounts must be opened and closed with {@link open_async} and {@link close_async}.  Most
+ * methods only work if the Account is opened (if not, that will be mentioned in their
+ * documentation).
+ *
+ * A list of all Accounts may be retrieved from the {@link Engine} singleton.
+ */
+
+public abstract class Geary.Account : BaseObject {
     public enum Problem {
         RECV_EMAIL_LOGIN_FAILED,
         SEND_EMAIL_LOGIN_FAILED,
@@ -15,12 +31,13 @@ public interface Geary.Account : BaseObject {
         SAVE_SENT_MAIL_FAILED,
     }
     
-    public abstract Geary.AccountInformation information { get; protected set; }
+    public Geary.AccountInformation information { get; protected set; }
     
-    public abstract Geary.ProgressMonitor search_upgrade_monitor { get; protected set; }
-    public abstract Geary.ProgressMonitor db_upgrade_monitor { get; protected set; }
-    public abstract Geary.ProgressMonitor opening_monitor { get; protected set; }
-    public abstract Geary.ProgressMonitor sending_monitor { get; protected set; }
+    public Geary.ProgressMonitor search_upgrade_monitor { get; protected set; }
+    public Geary.ProgressMonitor db_upgrade_monitor { get; protected set; }
+    public Geary.ProgressMonitor db_vacuum_monitor { get; protected set; }
+    public Geary.ProgressMonitor opening_monitor { get; protected set; }
+    public Geary.ProgressMonitor sending_monitor { get; protected set; }
     
     /**
      * HACK: for now, only certain account types support folders with
@@ -28,7 +45,7 @@ public interface Geary.Account : BaseObject {
      * archive because the button is hidden for accounts that will never
      * support it.
      */
-    public abstract bool can_support_archive { get; protected set; }
+    public bool can_support_archive { get; protected set; }
     
     public signal void opened();
     
@@ -107,75 +124,70 @@ public interface Geary.Account : BaseObject {
     public signal void email_flags_changed(Geary.Folder folder,
         Gee.Map<Geary.EmailIdentifier, Geary.EmailFlags> map);
     
-    /**
-     * Signal notification method for subclasses to use.
-     */
-    protected abstract void notify_opened();
+    private string name;
     
-    /**
-     * Signal notification method for subclasses to use.
-     */
-    protected abstract void notify_closed();
+    protected Account(string name, AccountInformation information, bool can_support_archive) {
+        this.name = name;
+        this.information = information;
+        this.can_support_archive = can_support_archive;
+    }
     
-    /**
-     * Signal notification method for subclasses to use.
-     */
-    protected abstract void notify_email_sent(Geary.RFC822.Message rfc822);
+    protected virtual void notify_folders_available_unavailable(Gee.List<Geary.Folder>? available,
+        Gee.List<Geary.Folder>? unavailable) {
+        folders_available_unavailable(available, unavailable);
+    }
+
+    protected virtual void notify_folders_added_removed(Gee.List<Geary.Folder>? added,
+        Gee.List<Geary.Folder>? removed) {
+        folders_added_removed(added, removed);
+    }
     
-    /**
-     * Signal notification method for subclasses to use.
-     */
-    protected abstract void notify_report_problem(Geary.Account.Problem problem, Error? err);
+    protected virtual void notify_folders_contents_altered(Gee.Collection<Geary.Folder> altered) {
+        folders_contents_altered(altered);
+    }
     
-    /**
-     * Signal notification method for subclasses to use.
-     */
-    protected abstract void notify_folders_available_unavailable(Gee.List<Geary.Folder>? available,
-        Gee.List<Geary.Folder>? unavailable);
+    protected virtual void notify_email_appended(Geary.Folder folder, Gee.Collection<Geary.EmailIdentifier> ids) {
+        email_appended(folder, ids);
+    }
     
-    /**
-     * Signal notification method for subclasses to use.
-     */
-    protected abstract void notify_folders_added_removed(Gee.List<Geary.Folder>? added,
-        Gee.List<Geary.Folder>? removed);
+    protected virtual void notify_email_inserted(Geary.Folder folder, Gee.Collection<Geary.EmailIdentifier> ids) {
+        email_inserted(folder, ids);
+    }
     
-    /**
-     * Signal notification method for subclasses to use.
-     */
-    protected abstract void notify_folders_contents_altered(Gee.Collection<Geary.Folder> altered);
+    protected virtual void notify_email_removed(Geary.Folder folder, Gee.Collection<Geary.EmailIdentifier> ids) {
+        email_removed(folder, ids);
+    }
     
-    /**
-     * Signal notification method for subclasses to use.
-     */
-    protected abstract void notify_email_appended(Geary.Folder folder, Gee.Collection<Geary.EmailIdentifier> ids);
+    protected virtual void notify_email_locally_complete(Geary.Folder folder,
+        Gee.Collection<Geary.EmailIdentifier> ids) {
+        email_locally_complete(folder, ids);
+    }
     
-    /**
-     * Signal notification method for subclasses to use.
-     */
-    protected abstract void notify_email_inserted(Geary.Folder folder, Gee.Collection<Geary.EmailIdentifier> ids);
+    protected virtual void notify_email_discovered(Geary.Folder folder,
+        Gee.Collection<Geary.EmailIdentifier> ids) {
+        email_discovered(folder, ids);
+    }
     
-    /**
-     * Signal notification method for subclasses to use.
-     */
-    protected abstract void notify_email_removed(Geary.Folder folder, Gee.Collection<Geary.EmailIdentifier> ids);
+    protected virtual void notify_email_flags_changed(Geary.Folder folder,
+        Gee.Map<Geary.EmailIdentifier, Geary.EmailFlags> flag_map) {
+        email_flags_changed(folder, flag_map);
+    }
     
-    /**
-     * Signal notification method for subclasses to use.
-     */
-    protected abstract void notify_email_locally_complete(Geary.Folder folder,
-        Gee.Collection<Geary.EmailIdentifier> ids);
+    protected virtual void notify_opened() {
+        opened();
+    }
     
-    /**
-     * Signal notification method for subclasses to use.
-     */
-    protected abstract void notify_email_discovered(Geary.Folder folder,
-        Gee.Collection<Geary.EmailIdentifier> ids);
+    protected virtual void notify_closed() {
+        closed();
+    }
     
-    /**
-     * Signal notification method for subclasses to use.
-     */
-    protected abstract void notify_email_flags_changed(Geary.Folder folder,
-        Gee.Map<Geary.EmailIdentifier, Geary.EmailFlags> flag_map);
+    protected virtual void notify_email_sent(RFC822.Message message) {
+        email_sent(message);
+    }
+    
+    protected virtual void notify_report_problem(Geary.Account.Problem problem, Error? err) {
+        report_problem(problem, err);
+    }
     
     /**
      * A utility method to sort a Gee.Collection of {@link Folder}s by their {@link FolderPath}s
@@ -204,7 +216,11 @@ public interface Geary.Account : BaseObject {
     public abstract async void open_async(Cancellable? cancellable = null) throws Error;
     
     /**
+     * Closes the {@link Account}, which makes most its operations unavailable.
      *
+     * This does not delete the Account, merely closes database and network channels.
+     *
+     * Returns without error if the Account is already closed.
      */
     public abstract async void close_async(Cancellable? cancellable = null) throws Error;
     
@@ -216,11 +232,14 @@ public interface Geary.Account : BaseObject {
     /**
      * Rebuild the local data stores for this {@link Account}.
      *
-     * This should only be used if {@link open_async} throws {@link EngineError.CORRUPTION},
-     * indicating that the local data store is corrupted and cannot be used.  ''rebuild_async()
-     * will delete all local data''.  If the Account is backed by a synchronized copy on the
-     * network, it will rebuild its local mail store.  If not, the data is forever deleted.
-     * Hence, it's best to query the user before calling this method.
+     * This should only be used if {@link open_async} throws {@link EngineError.CORRUPT},
+     * indicating that the local data store is corrupted and cannot be used.
+     *
+     * ''rebuild_async() will delete all local data''.
+     *
+     * If the Account is backed by a synchronized copy on the network, it will rebuild its local
+     * mail store.  If not, the data is forever deleted.  Hence, it's best to query the user before
+     * calling this method.
      *
      * Unlike most methods in Account, this should only be called when the Account is closed.
      */
@@ -239,8 +258,8 @@ public interface Geary.Account : BaseObject {
      * Folders.  This is important when thinking of opening and closing folders and signal
      * notifications.
      */
-    public abstract Gee.Collection<Geary.Folder> list_matching_folders(
-        Geary.FolderPath? parent) throws Error;
+    public abstract Gee.Collection<Geary.Folder> list_matching_folders(Geary.FolderPath? parent)
+        throws Error;
     
     /**
      * Lists all currently-available folders.  See caveats under
@@ -277,7 +296,10 @@ public interface Geary.Account : BaseObject {
      * Returns the folder representing the given special folder type.  If no such folder exists,
      * null is returned.
      */
-    public abstract Geary.Folder? get_special_folder(Geary.SpecialFolderType special) throws Error;
+    public virtual Geary.Folder? get_special_folder(Geary.SpecialFolderType special) throws Error {
+        return traverse<Folder>(list_folders())
+            .first_matching(f => f.special_folder_type == special);
+    }
     
     /**
      * Returns the Folder object with the given special folder type.  The folder will be
@@ -323,6 +345,23 @@ public interface Geary.Account : BaseObject {
         Geary.Email.Field required_fields, Cancellable? cancellable = null) throws Error;
     
     /**
+     * Create a new {@link SearchQuery} for this {@link Account}.
+     *
+     * See {@link Geary.SearchQuery.Strategy} for more information about how its interpreted by the
+     * Engine.  In particular, note that it's an advisory parameter only and may have no effect,
+     * especially on server searches.  However, it may also have a dramatic effect on what search
+     * results are returned and so should be used with some caution.  Whether this parameter is
+     * user-configurable, available through GSettings or another configuration mechanism, or simply
+     * baked into the caller's code is up to the caller.  CONSERVATIVE is designed to be a good
+     * default.
+     *
+     * The SearchQuery object can only be used with calls into this Account.
+     *
+     * Dropping the last reference to the SearchQuery will close it.
+     */
+    public abstract Geary.SearchQuery open_search(string query, Geary.SearchQuery.Strategy strategy);
+    
+    /**
      * Performs a search with the given query.  Optionally, a list of folders not to search
      * can be passed as well as a list of email identifiers to restrict the search to only those messages.
      * Returns a list of EmailIdentifiers, or null if there are no results.
@@ -335,9 +374,9 @@ public interface Geary.Account : BaseObject {
         Gee.Collection<Geary.EmailIdentifier>? search_ids = null, Cancellable? cancellable = null) throws Error;
     
     /**
-     * Given a list of mail IDs, returns a list of words that match for the query.
+     * Given a list of mail IDs, returns a set of casefolded words that match for the query.
      */
-    public abstract async Gee.Collection<string>? get_search_matches_async(Geary.SearchQuery query,
+    public abstract async Gee.Set<string>? get_search_matches_async(Geary.SearchQuery query,
         Gee.Collection<Geary.EmailIdentifier> ids, Cancellable? cancellable = null) throws Error;
     
     /**
@@ -353,6 +392,8 @@ public interface Geary.Account : BaseObject {
     /**
      * Used only for debugging.  Should not be used for user-visible strings.
      */
-    public abstract string to_string();
+    public virtual string to_string() {
+        return name;
+    }
 }
 

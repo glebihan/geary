@@ -1,4 +1,4 @@
-/* Copyright 2013-2014 Yorba Foundation
+/* Copyright 2013-2015 Yorba Foundation
  *
  * This software is licensed under the GNU Lesser General Public License
  * (version 2.1 or later).  See the COPYING file in this distribution.
@@ -47,7 +47,7 @@ public class Geary.Mime.ContentDisposition : Geary.BaseObject {
     public const string SIZE = "size";
     
     /**
-     * The {@link DispositionType}, which is {@link DispositionType.NONE} if not specified.
+     * The {@link DispositionType}, which is {@link DispositionType.UNSPECIFIED} if not specified.
      */
     public DispositionType disposition_type { get; private set; }
     

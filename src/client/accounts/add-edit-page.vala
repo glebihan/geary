@@ -1,4 +1,4 @@
-/* Copyright 2011-2014 Yorba Foundation
+/* Copyright 2011-2015 Yorba Foundation
  *
  * This software is licensed under the GNU Lesser General Public License
  * (version 2.1 or later).  See the COPYING file in this distribution.
@@ -169,11 +169,14 @@ public class AddEditPage : Gtk.Box {
     private Gtk.ComboBoxText combo_service;
     private Gtk.CheckButton check_remember_password;
     private Gtk.CheckButton check_save_sent_mail;
+    private Gtk.Button alternate_email_button;
 
     // Signature
     private Gtk.Box composer_container;
     private Gtk.CheckButton check_use_email_signature;
+    private Gtk.Stack signature_stack;
     private Gtk.TextView textview_email_signature;
+    private StylishWebView preview_webview;
     
     private Gtk.Alignment other_info;
     
@@ -213,6 +216,8 @@ public class AddEditPage : Gtk.Box {
     
     public signal void size_changed();
     
+    public signal void edit_alternate_emails();
+    
     public AddEditPage() {
         Object(orientation: Gtk.Orientation.VERTICAL, spacing: 4);
         
@@ -237,6 +242,7 @@ public class AddEditPage : Gtk.Box {
         entry_password = (Gtk.Entry) builder.get_object("entry: password");
         check_remember_password = (Gtk.CheckButton) builder.get_object("check: remember_password");
         check_save_sent_mail = (Gtk.CheckButton) builder.get_object("check: save_sent_mail");
+        alternate_email_button = (Gtk.Button) builder.get_object("button: edit_alternate_email");
         label_error = (Gtk.Label) builder.get_object("label: error");
         other_info = (Gtk.Alignment) builder.get_object("container: other_info");
         
@@ -257,7 +263,32 @@ public class AddEditPage : Gtk.Box {
         // composer options
         composer_container = (Gtk.Box) builder.get_object("composer container");
         check_use_email_signature = (Gtk.CheckButton) builder.get_object("check: use_email_signature");
-        textview_email_signature = (Gtk.TextView) builder.get_object("textview: email_signature");        
+        
+        Gtk.ScrolledWindow edit_window = new Gtk.ScrolledWindow(null, null);
+        edit_window.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC);
+        edit_window.set_shadow_type(Gtk.ShadowType.IN);
+        textview_email_signature = new Gtk.TextView();
+        edit_window.add(textview_email_signature);
+        
+        Gtk.ScrolledWindow preview_window = new Gtk.ScrolledWindow(null, null);
+        preview_window.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC);
+        preview_window.set_shadow_type(Gtk.ShadowType.IN);
+        preview_webview = new StylishWebView();
+        preview_window.add(preview_webview);
+        
+        signature_stack = new Gtk.Stack();
+        signature_stack.add_titled(edit_window, "edit_window", _("Edit"));
+        signature_stack.child_set_property(edit_window, "icon-name", "text-editor-symbolic");
+        signature_stack.add_titled(preview_window, "preview_window", _("Preview"));
+        signature_stack.child_set_property(preview_window, "icon-name", "text-x-generic-symbolic");
+        Gtk.StackSwitcher switcher = new Gtk.StackSwitcher();
+        switcher.set_stack(signature_stack);
+        
+        Gtk.Box signature_box = (Gtk.Box) builder.get_object("signature box");
+        signature_box.set_spacing(4);
+        signature_box.pack_start(signature_stack);
+        switcher.valign = Gtk.Align.START;
+        signature_box.pack_start(switcher, false, false);
         
         // IMAP info widgets.
         entry_imap_host = (Gtk.Entry) builder.get_object("entry: imap host");
@@ -301,6 +332,7 @@ public class AddEditPage : Gtk.Box {
         check_smtp_use_imap_credentials.toggled.connect(on_changed);
         check_smtp_noauth.toggled.connect(on_changed);
         check_save_drafts.toggled.connect(on_changed);
+        alternate_email_button.clicked.connect(on_alternate_email_button_clicked);
         
         entry_email.changed.connect(on_email_changed);
         entry_password.changed.connect(on_password_changed);
@@ -316,7 +348,8 @@ public class AddEditPage : Gtk.Box {
         
         entry_nickname.insert_text.connect(on_nickname_insert_text);
 
-        check_use_email_signature.toggled.connect(() => on_use_signature_changed());
+        check_use_email_signature.bind_property("active", signature_box, "sensitive");
+        signature_stack.notify["visible-child-name"].connect(on_signature_stack_changed);
         
         // Reset the "first update" flag when the window is mapped.
         map.connect(() => { first_ui_update = true; });
@@ -394,6 +427,7 @@ public class AddEditPage : Gtk.Box {
         combo_smtp_encryption.active = Encryption.NONE;
         use_email_signature = initial_use_email_signature;
         email_signature = initial_email_signature;
+        signature_stack.set_visible_child_name("edit_window");
         
         // Set defaults for IMAP info
         imap_host = initial_default_imap_host ?? "";
@@ -465,6 +499,10 @@ public class AddEditPage : Gtk.Box {
     
     private void on_changed() {
         info_changed();
+    }
+    
+    private void on_alternate_email_button_clicked() {
+        edit_alternate_emails();
     }
     
     // Prevent non-printable characters in nickname field.
@@ -550,12 +588,9 @@ public class AddEditPage : Gtk.Box {
         }
     }
     
-    private void on_use_signature_changed() {
-        if(check_use_email_signature.active == true) {
-            textview_email_signature.sensitive = true;
-        } else {
-            textview_email_signature.sensitive = false;
-        }
+    private void on_signature_stack_changed() {
+        if (signature_stack.visible_child_name == "preview_window")
+            preview_webview.load_html_string(smart_escape(email_signature, true), "");
     }
 
     private uint16 get_default_smtp_port() {
@@ -670,12 +705,14 @@ public class AddEditPage : Gtk.Box {
     // Updates UI based on various options.
     internal void update_ui() {
         base.show_all();
+        
         welcome_box.visible = mode == PageMode.WELCOME;
         entry_nickname.visible = label_nickname.visible = mode != PageMode.WELCOME;
         storage_container.visible = mode == PageMode.EDIT;
         check_save_sent_mail.visible = mode == PageMode.EDIT;
         check_save_drafts.visible = mode == PageMode.EDIT;
         composer_container.visible = mode == PageMode.EDIT;
+        alternate_email_button.visible = mode == PageMode.EDIT;
         
         if (get_service_provider() == Geary.ServiceProvider.OTHER) {
             // Display all options for custom providers.

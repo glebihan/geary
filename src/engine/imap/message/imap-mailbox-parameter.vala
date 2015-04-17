@@ -1,4 +1,4 @@
-/* Copyright 2011-2014 Yorba Foundation
+/* Copyright 2011-2015 Yorba Foundation
  *
  * This software is licensed under the GNU Lesser General Public License
  * (version 2.1 or later).  See the COPYING file in this distribution.
@@ -18,7 +18,7 @@ public class Geary.Imap.MailboxParameter : StringParameter {
     }
     
     public MailboxParameter.from_string_parameter(StringParameter string_parameter) {
-        base (string_parameter.value);
+        base (string_parameter.ascii);
     }
     
     private static string utf8_to_imap_utf7(string utf8) {
@@ -40,7 +40,7 @@ public class Geary.Imap.MailboxParameter : StringParameter {
     }
     
     public string decode() {
-        return imap_utf7_to_utf8(value);
+        return imap_utf7_to_utf8(ascii);
     }
     
     /**
@@ -54,7 +54,7 @@ public class Geary.Imap.MailboxParameter : StringParameter {
      * {@inheritDoc}
      */
     public override string to_string() {
-        return value;
+        return ascii;
     }
 }
 

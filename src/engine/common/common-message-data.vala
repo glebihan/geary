@@ -1,4 +1,4 @@
-/* Copyright 2011-2014 Yorba Foundation
+/* Copyright 2011-2015 Yorba Foundation
  *
  * This software is licensed under the GNU Lesser General Public License
  * (version 2.1 or later).  See the COPYING file in this distribution.
@@ -76,32 +76,6 @@ public abstract class Geary.MessageData.IntMessageData : AbstractMessageData,
     
     public virtual uint hash() {
         return value;
-    }
-    
-    public override string to_string() {
-        return value.to_string();
-    }
-}
-
-public abstract class Geary.MessageData.LongMessageData : AbstractMessageData,
-    Gee.Hashable<LongMessageData> {
-    public long value { get; private set; }
-    
-    private uint stored_hash = uint.MAX;
-    
-    public LongMessageData(long value) {
-        this.value = value;
-    }
-    
-    public virtual bool equal_to(LongMessageData other) {
-        if (this == other)
-            return true;
-        
-        return (value == other.value);
-    }
-    
-    public virtual uint hash() {
-        return (stored_hash != uint.MAX) ? stored_hash : (stored_hash = int64_hash((int64) value));
     }
     
     public override string to_string() {

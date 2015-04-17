@@ -1,18 +1,20 @@
-/* Copyright 2011-2014 Yorba Foundation
+/* Copyright 2011-2015 Yorba Foundation
  *
  * This software is licensed under the GNU Lesser General Public License
  * (version 2.1 or later).  See the COPYING file in this distribution.
  */
 
-public class Geary.Smtp.PlainAuthenticator : Geary.Smtp.AbstractAuthenticator {
+/**
+ * SASL's PLAIN authentication schema impemented as an {@link Authenticator}.
+ *
+ * See [[http://tools.ietf.org/html/rfc4616]]
+ */
+
+public class Geary.Smtp.PlainAuthenticator : Geary.Smtp.Authenticator {
     private static uint8[] nul = { '\0' };
     
     public PlainAuthenticator(Credentials credentials) {
-        base (credentials);
-    }
-    
-    public override string get_name() {
-        return "PLAIN";
+        base ("PLAIN", credentials);
     }
     
     public override Request initiate() {

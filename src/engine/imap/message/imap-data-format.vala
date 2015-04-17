@@ -1,4 +1,4 @@
-/* Copyright 2011-2014 Yorba Foundation
+/* Copyright 2011-2015 Yorba Foundation
  *
  * This software is licensed under the GNU Lesser General Public License
  * (version 2.1 or later).  See the COPYING file in this distribution.
@@ -25,7 +25,7 @@ private bool is_special_char(char ch, char[] ar, string? exceptions) {
         return true;
     
     if (ch in ar)
-        return (exceptions != null) ? exceptions.index_of_char(ch) < 0 : true;
+        return (exceptions != null) ? Ascii.index_of(exceptions, ch) < 0 : true;
     
     return false;
 }

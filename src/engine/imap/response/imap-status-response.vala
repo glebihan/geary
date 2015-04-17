@@ -1,4 +1,4 @@
-/* Copyright 2011-2014 Yorba Foundation
+/* Copyright 2011-2015 Yorba Foundation
  *
  * This software is licensed under the GNU Lesser General Public License
  * (version 2.1 or later).  See the COPYING file in this distribution.
@@ -88,7 +88,7 @@ public class Geary.Imap.StatusResponse : ServerResponse {
         for (int index = 2; index < size; index++) {
             StringParameter? strparam = get_if_string(index);
             if (strparam != null) {
-                builder.append(strparam.value);
+                builder.append(strparam.ascii);
                 if (index < (size - 1))
                     builder.append_c(' ');
             }

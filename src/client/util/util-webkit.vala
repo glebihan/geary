@@ -1,4 +1,4 @@
-/* Copyright 2011-2014 Yorba Foundation
+/* Copyright 2011-2015 Yorba Foundation
  *
  * This software is licensed under the GNU Lesser General Public License
  * (version 2.1 or later).  See the COPYING file in this distribution.
@@ -326,7 +326,7 @@ public string html_to_flowed_text(WebKit.DOM.HTMLElement el) {
     for (int i = nbq - 1; i >= 0; i--) {
         WebKit.DOM.HTMLElement bq = (WebKit.DOM.HTMLElement) blockquotes.item(i);
         bqtexts[i] = bq.get_inner_text();
-        if (bqtexts[i].substring(-1, 1) == "\n")
+        if (bqtexts[i].length > 0 && bqtexts[i].substring(-1, 1) == "\n")
             bqtexts[i] = bqtexts[i].slice(0, -1);
         else
             debug("Did not find expected newline at end of quote.");
@@ -465,5 +465,22 @@ public bool dissasemble_data_uri(string uri, out Geary.Memory.Buffer? buffer) {
     buffer = new Geary.Memory.ByteBuffer.take((owned) bytes, bytes_length);
     
     return true;
+}
+
+// Escape reserved HTML entities if the string does not have HTML tags.  If there are no tags,
+// or if preserve_whitespace_in_html is true, wrap the string a div to preserve whitespace.
+public string smart_escape(string? text, bool preserve_whitespace_in_html) {
+    if (text == null)
+        return text;
+    
+    string res = text;
+    if (!Regex.match_simple("<([A-Z]*)(?: [^>]*)?>.*</(\\1)>|<[A-Z]*(?: [^>]*)?/>", res,
+        RegexCompileFlags.CASELESS)) {
+        res = Geary.HTML.escape_markup(res);
+        preserve_whitespace_in_html = true;
+    }
+    if (preserve_whitespace_in_html)
+        res = @"<div style='white-space: pre;'>$res</div>";
+    return res;
 }
 

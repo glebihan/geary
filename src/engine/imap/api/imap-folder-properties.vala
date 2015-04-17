@@ -1,4 +1,4 @@
-/* Copyright 2011-2014 Yorba Foundation
+/* Copyright 2011-2015 Yorba Foundation
  *
  * This software is licensed under the GNU Lesser General Public License
  * (version 2.1 or later).  See the COPYING file in this distribution.
@@ -172,7 +172,8 @@ public class Geary.Imap.FolderProperties : Geary.FolderProperties {
     /**
      * Update an existing {@link FolderProperties} with fresh {@link StatusData}.
      *
-     * This will force the {@link email_total} property to match the {@link status_messages} value.
+     * This will force the {@link Geary.FolderProperties.email_total} property to match the
+     * {@link status_messages} value.
      */
     public void update_status(StatusData status) {
         set_status_message_count(status.messages, true);

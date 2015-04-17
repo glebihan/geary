@@ -1,4 +1,4 @@
-/* Copyright 2011-2014 Yorba Foundation
+/* Copyright 2011-2015 Yorba Foundation
  *
  * This software is licensed under the GNU Lesser General Public License
  * (version 2.1 or later).  See the COPYING file in this distribution.
@@ -7,6 +7,8 @@
 // LibSecret password adapter.
 public class SecretMediator : Geary.CredentialsMediator, Object {
     private const string OLD_GEARY_USERNAME_PREFIX = "org.yorba.geary username:";
+    
+    private Geary.Nonblocking.Mutex dialog_mutex = new Geary.Nonblocking.Mutex();
     
     private string get_key_name(Geary.Service service, string user) {
         switch (service) {
@@ -112,10 +114,25 @@ public class SecretMediator : Geary.CredentialsMediator, Object {
         // API would indicate it does.  We need to revamp the API.
         assert(!services.has_imap() || !services.has_smtp());
         
-        PasswordDialog password_dialog = new PasswordDialog(services.has_smtp(),
-            account_information, services);
+        // to prevent multiple dialogs from popping up at the same time, use a nonblocking mutex
+        // to serialize the code
+        int token = yield dialog_mutex.claim_async(null);
         
-        if (!password_dialog.run()) {
+        // If the main window is hidden, make it visible now and present to user as transient parent
+        Gtk.Window? main_window = GearyApplication.instance.controller.main_window;
+        if (main_window != null && !main_window.visible) {
+            main_window.show_all();
+            main_window.present_with_time(Gdk.CURRENT_TIME);
+        }
+        
+        PasswordDialog password_dialog = new PasswordDialog(main_window, services.has_smtp(),
+            account_information, services);
+        bool result = password_dialog.run();
+        
+        dialog_mutex.release(ref token);
+        
+        if (!result) {
+            // user cancelled the dialog
             imap_password = null;
             smtp_password = null;
             imap_remember_password = false;

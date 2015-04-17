@@ -1,4 +1,4 @@
-/* Copyright 2011-2014 Yorba Foundation
+/* Copyright 2011-2015 Yorba Foundation
  *
  * This software is licensed under the GNU Lesser General Public License
  * (version 2.1 or later).  See the COPYING file in this distribution.
@@ -634,7 +634,7 @@ private class Geary.SmtpOutboxFolder : Geary.AbstractLocalFolder, Geary.FolderSu
         
         if (smtp_err == null) {
             try {
-                yield smtp.send_email_async(_account.information.get_mailbox_address(),
+                yield smtp.send_email_async(_account.information.get_primary_mailbox_address(),
                     rfc822, cancellable);
             } catch (Error send_err) {
                 debug("SMTP send mail error: %s", send_err.message);

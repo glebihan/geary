@@ -1,4 +1,4 @@
-/* Copyright 2011-2014 Yorba Foundation
+/* Copyright 2011-2015 Yorba Foundation
  *
  * This software is licensed under the GNU Lesser General Public License
  * (version 2.1 or later).  See the COPYING file in this distribution.
@@ -13,7 +13,7 @@ public class PasswordDialog {
     // strings, and Glade doesn't support the "larger" size attribute. See this bug report for
     // details: https://bugzilla.gnome.org/show_bug.cgi?id=679006
     private const string PRIMARY_TEXT_MARKUP = "<span weight=\"bold\" size=\"larger\">%s</span>";
-    private const string PRIMARY_TEXT_FIRST_TRY = _("Please enter your password");
+    private const string PRIMARY_TEXT_FIRST_TRY = _("Geary requires your email password to continue");
     
     private Gtk.Dialog dialog;
     private Gtk.Entry entry_password;
@@ -23,11 +23,12 @@ public class PasswordDialog {
     public string password { get; private set; default = ""; }
     public bool remember_password { get; private set; }
     
-    public PasswordDialog(bool smtp, Geary.AccountInformation account_information,
+    public PasswordDialog(Gtk.Window? parent, bool smtp, Geary.AccountInformation account_information,
         Geary.ServiceFlag password_flags) {
         Gtk.Builder builder = GearyApplication.instance.create_builder("password-dialog.glade");
         
         dialog = (Gtk.Dialog) builder.get_object("PasswordDialog");
+        dialog.transient_for = parent;
         dialog.set_type_hint(Gdk.WindowTypeHint.DIALOG);
         dialog.set_default_response(Gtk.ResponseType.OK);
         
@@ -53,12 +54,7 @@ public class PasswordDialog {
         if (smtp)
             label_smtp.show();
         
-        Gtk.Button cancel_button = new Gtk.Button.from_stock(Stock._CANCEL);
-        ok_button = new Gtk.Button.from_stock(Stock._OK);
-        ok_button.can_default = true;
-        dialog.add_action_widget(cancel_button, Gtk.ResponseType.CANCEL);
-        dialog.add_action_widget(ok_button, Gtk.ResponseType.OK);
-        dialog.set_default_response(Gtk.ResponseType.OK);
+        ok_button = (Gtk.Button) builder.get_object("authenticate_button");
         
         refresh_ok_button_sensitivity();
         entry_password.changed.connect(refresh_ok_button_sensitivity);

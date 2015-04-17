@@ -1,4 +1,4 @@
-/* Copyright 2011-2014 Yorba Foundation
+/* Copyright 2011-2015 Yorba Foundation
  *
  * This software is licensed under the GNU Lesser General Public License
  * (version 2.1 or later).  See the COPYING file in this distribution.
@@ -8,13 +8,13 @@ public class Geary.Imap.ClientSession : BaseObject {
     // 30 min keepalive required to maintain session
     public const uint MIN_KEEPALIVE_SEC = 30 * 60;
     
-    // 5 minutes is more realistic, as underlying sockets will not necessarily report errors if
+    // 10 minutes is more realistic, as underlying sockets will not necessarily report errors if
     // physical connection is lost
-    public const uint RECOMMENDED_KEEPALIVE_SEC = 5 * 60;
+    public const uint RECOMMENDED_KEEPALIVE_SEC = 10 * 60;
     
     // A more aggressive keepalive will detect when a connection has died, thereby giving the client
     // a chance to reestablish a connection without long lags.
-    public const uint AGGRESSIVE_KEEPALIVE_SEC = 30;
+    public const uint AGGRESSIVE_KEEPALIVE_SEC = 5 * 60;
     
     // NOOP is only sent after this amount of time has passed since the last received
     // message on the connection dependent on connection state (selected/examined vs. authorized)
@@ -22,15 +22,34 @@ public class Geary.Imap.ClientSession : BaseObject {
     public const uint DEFAULT_UNSELECTED_KEEPALIVE_SEC = RECOMMENDED_KEEPALIVE_SEC;
     public const uint DEFAULT_SELECTED_WITH_IDLE_KEEPALIVE_SEC = AGGRESSIVE_KEEPALIVE_SEC;
     
-    private const int GREETING_TIMEOUT_SEC = 30;
+    private const uint GREETING_TIMEOUT_SEC = ClientConnection.DEFAULT_COMMAND_TIMEOUT_SEC;
     
-    public enum Context {
+    /**
+     * The various states an IMAP {@link ClientSession} may be in at any moment.
+     *
+     * These don't exactly match the states in the IMAP specification.  For one, they count
+     * transitions as states unto themselves (due to network latency and the asynchronous nature
+     * of ClientSession's interface).  Also, the LOGOUT (and logging out) state has been melded
+     * into {@link ProtocolState.UNCONNECTED} on the presumption that the nuances of a disconnected or
+     * disconnecting session is uninteresting to the caller.
+     *
+     * See [[http://tools.ietf.org/html/rfc3501#section-3]]
+     *
+     * @see get_protocol_state
+     */
+    public enum ProtocolState {
         UNCONNECTED,
+        CONNECTING,
         UNAUTHORIZED,
+        AUTHORIZING,
         AUTHORIZED,
+        SELECTING,
         SELECTED,
-        EXAMINED,
-        IN_PROGRESS
+        /**
+         * Indicates the {@link ClientSession} is closing a ''mailbox'', i.e. a folder, not the
+         * connection itself.
+         */
+        CLOSING_MAILBOX
     }
     
     public enum DisconnectReason {
@@ -221,7 +240,7 @@ public class Geary.Imap.ClientSession : BaseObject {
     
     public signal void recent(int count);
     
-    public signal void search(Gee.List<int> seq_or_uid);
+    public signal void search(int64[] seq_or_uid);
     
     public signal void status(StatusData status_data);
     
@@ -395,7 +414,11 @@ public class Geary.Imap.ClientSession : BaseObject {
         return current_mailbox_readonly;
     }
     
-    public Context get_context(out MailboxSpecifier? current_mailbox) {
+    /**
+     * Returns the current {@link ProtocolState} of the {@link ClientSession} and, if selected,
+     * the current mailbox.
+     */
+    public ProtocolState get_protocol_state(out MailboxSpecifier? current_mailbox) {
         current_mailbox = null;
         
         switch (fsm.get_state()) {
@@ -403,24 +426,30 @@ public class Geary.Imap.ClientSession : BaseObject {
             case State.LOGGED_OUT:
             case State.LOGGING_OUT:
             case State.BROKEN:
-                return Context.UNCONNECTED;
+                return ProtocolState.UNCONNECTED;
             
             case State.NOAUTH:
-                return Context.UNAUTHORIZED;
+                return ProtocolState.UNAUTHORIZED;
             
             case State.AUTHORIZED:
-                return Context.AUTHORIZED;
+                return ProtocolState.AUTHORIZED;
             
             case State.SELECTED:
                 current_mailbox = this.current_mailbox;
                 
-                return current_mailbox_readonly ? Context.EXAMINED : Context.SELECTED;
+                return ProtocolState.SELECTED;
             
             case State.CONNECTING:
+                return ProtocolState.CONNECTING;
+            
             case State.AUTHORIZING:
+                return ProtocolState.AUTHORIZING;
+            
             case State.SELECTING:
+                return ProtocolState.SELECTING;
+            
             case State.CLOSING_MAILBOX:
-                return Context.IN_PROGRESS;
+                return ProtocolState.CLOSING_MAILBOX;
             
             default:
                 assert_not_reached();
@@ -634,7 +663,7 @@ public class Geary.Imap.ClientSession : BaseObject {
         
         debug("[%s] Connect timed-out", to_string());
         
-        connect_err = new IOError.TIMED_OUT("Session greeting not seen in %d seconds",
+        connect_err = new IOError.TIMED_OUT("Session greeting not seen in %u seconds",
             GREETING_TIMEOUT_SEC);
         
         return State.LOGGED_OUT;
@@ -851,19 +880,21 @@ public class Geary.Imap.ClientSession : BaseObject {
         unschedule_keepalive();
         
         uint seconds;
-        switch (get_context(null)) {
-            case Context.UNCONNECTED:
+        switch (get_protocol_state(null)) {
+            case ProtocolState.UNCONNECTED:
+            case ProtocolState.CONNECTING:
                 return;
             
-            case Context.IN_PROGRESS:
-            case Context.EXAMINED:
-            case Context.SELECTED:
+            case ProtocolState.SELECTING:
+            case ProtocolState.SELECTED:
                 seconds = (allow_idle && supports_idle()) ? selected_with_idle_keepalive_secs
                     : selected_keepalive_secs;
             break;
             
-            case Context.UNAUTHORIZED:
-            case Context.AUTHORIZED:
+            case ProtocolState.UNAUTHORIZED:
+            case ProtocolState.AUTHORIZING:
+            case ProtocolState.AUTHORIZED:
+            case ProtocolState.CLOSING_MAILBOX:
             default:
                 seconds = unselected_keepalive_secs;
             break;
@@ -974,13 +1005,12 @@ public class Geary.Imap.ClientSession : BaseObject {
         // machine
         //
         // TODO: Convert commands into proper calls to avoid throwing an exception
-        switch (cmd.name) {
-            case LoginCommand.NAME:
-            case LogoutCommand.NAME:
-            case SelectCommand.NAME:
-            case ExamineCommand.NAME:
-            case CloseCommand.NAME:
-                throw new ImapError.NOT_SUPPORTED("Use direct calls rather than commands for %s", cmd.name);
+        if (cmd.has_name(LoginCommand.NAME)
+            || cmd.has_name(LogoutCommand.NAME)
+            || cmd.has_name(SelectCommand.NAME)
+            || cmd.has_name(ExamineCommand.NAME)
+            || cmd.has_name(CloseCommand.NAME)) {
+            throw new ImapError.NOT_SUPPORTED("Use direct calls rather than commands for %s", cmd.name);
         }
     }
     

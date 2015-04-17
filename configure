@@ -24,8 +24,6 @@ configure_help() {
 	
 	  --disable-fatal-warnings
 	                        Disable Vala fatal warnings when compiling.
-	  --enable-unity
-	                        Enable Unity interface changes.
 	  --enable-ref-tracking
 	                        Enable reference tracking which is dumped to stdout when the program exits.
 	  --disable-schemas-compile
@@ -40,6 +38,8 @@ configure_help() {
 	                        Disable generating and installing translated help documentation.
 	  --disable-contractor
 	                        Disable installing Contractor files.
+	  --disable-poodle-ssl3
+	                        Disable POODLE SSLv3 GnuTLS priority fix. (Not recommended.)
 
 	Some influential environment variables:
 	  PKG_CONFIG_PATH       Adds directories to pkg-config's search path.
@@ -94,10 +94,6 @@ do
                             CMDLINE="${CMDLINE} -DREF_TRACKING=ON"
                             ;;
         
-        --enable-unity)
-                            CMDLINE="${CMDLINE} -DENABLE_UNITY=ON"
-                            ;;
-        
         --disable-schemas-compile)
                             CMDLINE="${CMDLINE} -DGSETTINGS_COMPILE=OFF"
                             CMDLINE="${CMDLINE} -DGSETTINGS_COMPILE_IN_PLACE=OFF"
@@ -121,6 +117,10 @@ do
         
         --disable-contractor)
                             CMDLINE="${CMDLINE} -DDISABLE_CONTRACT=ON"
+                            ;;
+        
+        --disable-poodle-ssl3)
+                            CMDLINE="${CMDLINE} -DDISABLE_POODLE=ON"
                             ;;
         
         VALAC)              [ ! $value ] && abort $1

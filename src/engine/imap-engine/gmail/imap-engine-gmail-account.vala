@@ -1,4 +1,4 @@
-/* Copyright 2011-2014 Yorba Foundation
+/* Copyright 2011-2015 Yorba Foundation
  *
  * This software is licensed under the GNU Lesser General Public License
  * (version 2.1 or later).  See the COPYING file in this distribution.
@@ -36,13 +36,16 @@ private class Geary.ImapEngine.GmailAccount : Geary.ImapEngine.GenericAccount {
         
         switch (special_folder_type) {
             case SpecialFolderType.ALL_MAIL:
-                return new MinimalFolder(this, remote_account, local_account, local_folder,
+                return new GmailAllMailFolder(this, remote_account, local_account, local_folder,
                     special_folder_type);
             
             case SpecialFolderType.DRAFTS:
+                return new GmailDraftsFolder(this, remote_account, local_account, local_folder,
+                    special_folder_type);
+            
             case SpecialFolderType.SPAM:
             case SpecialFolderType.TRASH:
-                return new GenericFolder(this, remote_account, local_account, local_folder,
+                return new GmailSpamTrashFolder(this, remote_account, local_account, local_folder,
                     special_folder_type);
             
             default:

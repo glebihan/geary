@@ -1,4 +1,4 @@
-/* Copyright 2011-2014 Yorba Foundation
+/* Copyright 2011-2015 Yorba Foundation
  *
  * This software is licensed under the GNU Lesser General Public License
  * (version 2.1 or later).  See the COPYING file in this distribution.
@@ -79,8 +79,10 @@ private class Geary.Imap.Account : BaseObject {
     // possibly is long enough for ClientSessionManager to get a few ready).
     private async ClientSession claim_session_async(Cancellable? cancellable) throws Error {
         // check if available session is in good state
-        if (account_session != null && account_session.get_context(null) != ClientSession.Context.AUTHORIZED)
+        if (account_session != null
+            && account_session.get_protocol_state(null) != ClientSession.ProtocolState.AUTHORIZED) {
             yield drop_session_async(cancellable);
+        }
         
         int token = yield account_session_mutex.claim_async(cancellable);
         
@@ -153,6 +155,8 @@ private class Geary.Imap.Account : BaseObject {
     }
     
     private async void drop_session_async(Cancellable? cancellable) {
+        debug("[%s] Dropping account session...", to_string());
+        
         int token;
         try {
             token = yield account_session_mutex.claim_async(cancellable);
@@ -162,17 +166,25 @@ private class Geary.Imap.Account : BaseObject {
             return;
         }
         
+        string desc = account_session != null ? account_session.to_string() : "(none)";
+        
         if (account_session != null) {
+            // disconnect signals before releasing (in particular, "disconnected" will in turn
+            // reenter this method, so avoid that)
+            account_session.list.disconnect(on_list_data);
+            account_session.status.disconnect(on_status_data);
+            account_session.server_data_received.disconnect(on_server_data_received);
+            account_session.disconnected.disconnect(on_disconnected);
+            
+            debug("[%s] Releasing account session %s", to_string(), desc);
+            
             try {
                 yield session_mgr.release_session_async(account_session, cancellable);
             } catch (Error err) {
                 // ignored
             }
             
-            account_session.list.disconnect(on_list_data);
-            account_session.status.disconnect(on_status_data);
-            account_session.server_data_received.disconnect(on_server_data_received);
-            account_session.disconnected.disconnect(on_disconnected);
+            debug("[%s] Released account session %s", to_string(), desc);
             
             account_session = null;
         }
@@ -182,6 +194,8 @@ private class Geary.Imap.Account : BaseObject {
         } catch (Error err) {
             // ignored
         }
+        
+        debug("[%s] Dropped account session (%s)", to_string(), desc);
     }
     
     private void on_list_data(MailboxInformation mailbox_info) {
@@ -219,8 +233,10 @@ private class Geary.Imap.Account : BaseObject {
         }
     }
     
+    // By supplying fallback STATUS, the Folder may be fetched if a network error occurs; if null,
+    // the network error is thrown
     public async Imap.Folder fetch_folder_async(FolderPath path, out bool created,
-        Cancellable? cancellable) throws Error {
+        StatusData? fallback_status_data, Cancellable? cancellable) throws Error {
         check_open();
         
         created = false;
@@ -245,7 +261,18 @@ private class Geary.Imap.Account : BaseObject {
         
         Imap.Folder folder;
         if (!mailbox_info.attrs.is_no_select) {
-            StatusData status = yield fetch_status_async(path, StatusDataType.all(), cancellable);
+            StatusData status;
+            try {
+                status = yield fetch_status_async(folder_path, StatusDataType.all(), cancellable);
+            } catch (Error err) {
+                if (fallback_status_data == null)
+                    throw err;
+                
+                debug("Unable to fetch STATUS for %s, using fallback from local: %s", folder_path.to_string(),
+                    err.message);
+                
+                status = fallback_status_data;
+            }
             
             folder = new Imap.Folder(folder_path, session_mgr, status, mailbox_info);
         } else {
@@ -253,6 +280,35 @@ private class Geary.Imap.Account : BaseObject {
         }
         
         folders.set(path, folder);
+        
+        return folder;
+    }
+    
+    /**
+     * Returns an Imap.Folder that is not stored long-term in the Imap.Account object.
+     *
+     * This means the Imap.Folder is not re-used or used by multiple users or containers.  This is
+     * useful for one-shot operations on the server.
+     */
+    public async Imap.Folder fetch_unrecycled_folder_async(FolderPath path, Cancellable? cancellable)
+        throws Error {
+        check_open();
+        
+        MailboxInformation? mailbox_info = path_to_mailbox.get(path);
+        if (mailbox_info == null)
+            throw_not_found(path);
+        
+        // construct canonical folder path
+        FolderPath folder_path = mailbox_info.get_path(inbox_specifier);
+        
+        Imap.Folder folder;
+        if (!mailbox_info.attrs.is_no_select) {
+            StatusData status = yield fetch_status_async(folder_path, StatusDataType.all(), cancellable);
+            
+            folder = new Imap.Folder(folder_path, session_mgr, status, mailbox_info);
+        } else {
+            folder = new Imap.Folder.unselectable(folder_path, session_mgr, mailbox_info);
+        }
         
         return folder;
     }
@@ -266,8 +322,8 @@ private class Geary.Imap.Account : BaseObject {
         }
     }
     
-    public async int fetch_unseen_count_async(FolderPath path, Cancellable? cancellable)
-        throws Error {
+    public async void fetch_counts_async(FolderPath path, out int unseen, out int total,
+        Cancellable? cancellable) throws Error {
         check_open();
         
         MailboxInformation? mailbox_info = path_to_mailbox.get(path);
@@ -278,8 +334,10 @@ private class Geary.Imap.Account : BaseObject {
                 path.to_string());
         }
         
-        StatusData data = yield fetch_status_async(path, { StatusDataType.UNSEEN }, cancellable);
-        return data.unseen;
+        StatusData data = yield fetch_status_async(path, { StatusDataType.UNSEEN, StatusDataType.MESSAGES },
+            cancellable);
+        unseen = data.unseen;
+        total = data.messages;
     }
     
     private async StatusData fetch_status_async(FolderPath path, StatusDataType[] status_types,

@@ -1,4 +1,4 @@
-/* Copyright 2011-2014 Yorba Foundation
+/* Copyright 2011-2015 Yorba Foundation
  *
  * This software is licensed under the GNU Lesser General Public License
  * (version 2.1 or later).  See the COPYING file in this distribution.
@@ -27,7 +27,7 @@ public class Geary.Smtp.Greeting : Response {
         }
         
         public static ServerFlavor deserialize(string str) {
-            switch (str.up()) {
+            switch (Ascii.strup(str)) {
                 case "SMTP":
                     return SMTP;
                 

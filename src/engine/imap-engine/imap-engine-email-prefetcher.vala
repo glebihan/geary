@@ -1,4 +1,4 @@
-/* Copyright 2012-2014 Yorba Foundation
+/* Copyright 2012-2015 Yorba Foundation
  *
  * This software is licensed under the GNU Lesser General Public License
  * (version 2.1 or later).  See the COPYING file in this distribution.
@@ -24,7 +24,7 @@ private class Geary.ImapEngine.EmailPrefetcher : Object {
     private int start_delay_sec;
     private Nonblocking.Mutex mutex = new Nonblocking.Mutex();
     private Gee.TreeSet<Geary.Email> prefetch_emails = new Gee.TreeSet<Geary.Email>(
-        Email.compare_date_received_descending);
+        Email.compare_recv_date_descending);
     private uint schedule_id = 0;
     private Cancellable cancellable = new Cancellable();
     
@@ -167,7 +167,7 @@ private class Geary.ImapEngine.EmailPrefetcher : Object {
     private async void do_prefetch_batch_async() throws Error {
         // snarf up all requested Emails for this round
         Gee.TreeSet<Geary.Email> emails = prefetch_emails;
-        prefetch_emails = new Gee.TreeSet<Geary.Email>(Email.compare_date_received_descending);
+        prefetch_emails = new Gee.TreeSet<Geary.Email>(Email.compare_recv_date_descending);
         
         if (emails.size == 0)
             return;

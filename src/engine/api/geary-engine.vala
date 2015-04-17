@@ -1,7 +1,18 @@
-/* Copyright 2011-2014 Yorba Foundation
+/* Copyright 2011-2015 Yorba Foundation
  *
  * This software is licensed under the GNU Lesser General Public License
  * (version 2.1 or later).  See the COPYING file in this distribution.
+ */
+
+/**
+ * The Geary email engine initial entry points.
+ *
+ * Engine represents and contains interfaces into the rest of the email library.  It's a singleton
+ * class (see {@link instance}) with various signals for event notification.  Engine is initialized
+ * by calling {@link open_async} and closed with {@link close_async}.
+ *
+ * Engine can list existing {@link Account} objects and create/delete them.  It can also validate
+ * changes to Accounts prior to saving those changes.
  */
 
 public class Geary.Engine : BaseObject {
@@ -125,8 +136,7 @@ public class Geary.Engine : BaseObject {
      * when necessary.
      */
     public async void open_async(File user_data_dir, File resource_dir,
-                                 Geary.CredentialsMediator? authentication_mediator,
-                                 Cancellable? cancellable = null) throws Error {
+        Geary.CredentialsMediator? authentication_mediator, Cancellable? cancellable = null) throws Error {
         // initialize *before* opening the Engine ... all initialize code should assume the Engine
         // is closed
         initialize_library();
@@ -191,16 +201,19 @@ public class Geary.Engine : BaseObject {
     public async void close_async(Cancellable? cancellable = null) throws Error {
         if (!is_open)
             return;
-
-        foreach(AccountInformation account in accounts.values)
+        
+        Gee.Collection<AccountInformation> unavailable_accounts = accounts.values;
+        accounts.clear();
+        
+        foreach(AccountInformation account in unavailable_accounts)
             account_unavailable(account);
-
+        
         user_data_dir = null;
         resource_dir = null;
         authentication_mediator = null;
         accounts = null;
         account_instances = null;
-
+        
         is_open = false;
         closed();
     }
@@ -267,7 +280,7 @@ public class Geary.Engine : BaseObject {
                 
                 // Connected and initiated, still need to be sure connection authorized
                 Imap.MailboxSpecifier current_mailbox;
-                if (imap_session.get_context(out current_mailbox) != Imap.ClientSession.Context.AUTHORIZED)
+                if (imap_session.get_protocol_state(out current_mailbox) != Imap.ClientSession.ProtocolState.AUTHORIZED)
                     error_code |= ValidationResult.IMAP_CREDENTIALS_INVALID;
             } catch (Error err) {
                 debug("Error validating IMAP account info: %s", err.message);

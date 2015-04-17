@@ -1,4 +1,4 @@
-/* Copyright 2011-2014 Yorba Foundation
+/* Copyright 2011-2015 Yorba Foundation
  *
  * This software is licensed under the GNU Lesser General Public License
  * (version 2.1 or later).  See the COPYING file in this distribution.
@@ -28,7 +28,7 @@ public class Geary.Imap.ClientConnection : BaseObject {
      *
      * @see command_timeout_sec
      */
-    public const uint DEFAULT_COMMAND_TIMEOUT_SEC = 15;
+    public const uint DEFAULT_COMMAND_TIMEOUT_SEC = 30;
     
     private const int FLUSH_TIMEOUT_MSEC = 10;
     
@@ -114,6 +114,7 @@ public class Geary.Imap.ClientConnection : BaseObject {
     private uint flush_timeout_id = 0;
     private bool idle_when_quiet = false;
     private Gee.HashSet<Tag> posted_idle_tags = new Gee.HashSet<Tag>();
+    private int outstanding_idle_dones = 0;
     private Tag? posted_synchronization_tag = null;
     private StatusResponse? synchronization_status_response = null;
     private bool waiting_for_idle_to_synchronize = false;
@@ -215,7 +216,7 @@ public class Geary.Imap.ClientConnection : BaseObject {
             new Geary.State.Mapping(State.IDLING, Event.SYNCHRONIZE, on_idle_synchronize),
             new Geary.State.Mapping(State.IDLING, Event.RECVD_STATUS_RESPONSE, on_idle_status_response),
             new Geary.State.Mapping(State.IDLING, Event.RECVD_SERVER_DATA, on_server_data),
-            new Geary.State.Mapping(State.IDLING, Event.RECVD_CONTINUATION_RESPONSE, on_idling_continuation),
+            new Geary.State.Mapping(State.IDLING, Event.RECVD_CONTINUATION_RESPONSE, on_idling_deidling_continuation),
             new Geary.State.Mapping(State.IDLING, Event.DISCONNECTED, on_disconnected),
             
             new Geary.State.Mapping(State.IDLE, Event.SEND, on_idle_send),
@@ -231,7 +232,7 @@ public class Geary.Imap.ClientConnection : BaseObject {
             new Geary.State.Mapping(State.DEIDLING, Event.SYNCHRONIZE, on_deidling_synchronize),
             new Geary.State.Mapping(State.DEIDLING, Event.RECVD_STATUS_RESPONSE, on_idle_status_response),
             new Geary.State.Mapping(State.DEIDLING, Event.RECVD_SERVER_DATA, on_server_data),
-            new Geary.State.Mapping(State.DEIDLING, Event.RECVD_CONTINUATION_RESPONSE, on_idling_continuation),
+            new Geary.State.Mapping(State.DEIDLING, Event.RECVD_CONTINUATION_RESPONSE, on_idling_deidling_continuation),
             new Geary.State.Mapping(State.DEIDLING, Event.DISCONNECTED, on_disconnected),
             
             new Geary.State.Mapping(State.DEIDLING_SYNCHRONIZING, Event.SEND, on_proceed),
@@ -633,9 +634,6 @@ public class Geary.Imap.ClientConnection : BaseObject {
     }
     
     private async void do_flush_async() {
-        // need to signal when the IDLE command is sent, for completeness
-        IdleCommand? idle_cmd = null;
-        
         // Like send_async(), need to use mutex when flushing as Serializer must be accessed in
         // serialized fashion
         //
@@ -714,7 +712,7 @@ public class Geary.Imap.ClientConnection : BaseObject {
             // as connection is "quiet" (haven't seen new command in n msec), go into IDLE state
             // if (a) allowed by owner, (b) allowed by state machine, and (c) no commands outstanding
             if (ser != null && idle_when_quiet && outstanding_cmds == 0 && issue_conditional_event(Event.SEND_IDLE)) {
-                idle_cmd = new IdleCommand();
+                IdleCommand idle_cmd = new IdleCommand();
                 idle_cmd.assign_tag(generate_tag());
                 
                 // store IDLE tag to watch for response later (many responses could arrive before it)
@@ -733,7 +731,6 @@ public class Geary.Imap.ClientConnection : BaseObject {
                 assert(synchronize_tag == null);
             }
         } catch (Error err) {
-            idle_cmd = null;
             send_failure(err);
         } finally {
             if (token != Nonblocking.Mutex.INVALID_TOKEN) {
@@ -744,9 +741,6 @@ public class Geary.Imap.ClientConnection : BaseObject {
                 }
             }
         }
-        
-        if (idle_cmd != null)
-            sent_command(idle_cmd);
     }
     
     private void check_for_connection() throws Error {
@@ -932,10 +926,15 @@ public class Geary.Imap.ClientConnection : BaseObject {
         return state;
     }
     
-    private uint on_idling_continuation(uint state, uint event, void *user, Object? object) {
+    private uint on_idling_deidling_continuation(uint state, uint event, void *user, Object? object) {
         ContinuationResponse continuation = (ContinuationResponse) object;
         
         Logging.debug(Logging.Flag.NETWORK, "[%s R] %s", to_string(), continuation.to_string());
+        
+        // if deidling and a DONE is outstanding, keep waiting for it to complete -- don't go to
+        // IDLE, as that will cause another spurious DONE to be issued
+        if (state == State.DEIDLING && outstanding_idle_dones > 0)
+            return state;
         
         // only signal entering IDLE state if that's the case
         if (state != State.IDLE)
@@ -959,6 +958,11 @@ public class Geary.Imap.ClientConnection : BaseObject {
             Logging.debug(Logging.Flag.NETWORK, "[%s S] %s", to_string(), IDLE_DONE);
             ser.push_unquoted_string(IDLE_DONE);
             ser.push_eol();
+            
+            // track the number of DONE's outstanding, as their responses are pipelined as well
+            // (this prevents issuing more than one DONE when the idle continuation response comes
+            // in *after* issuing the DONE)
+            outstanding_idle_dones++;
         } catch (Error err) {
             debug("[%s] Unable to close IDLE: %s", to_string(), err.message);
             
@@ -990,6 +994,10 @@ public class Geary.Imap.ClientConnection : BaseObject {
             Logging.debug(Logging.Flag.NETWORK, "[%s] Unable to enter IDLE (%d outstanding): %s", to_string(),
                 posted_idle_tags.size, status_response.to_string());
         }
+        
+        // DONE has round-tripped (but watch for underflows, especially if server "forces" an IDLE
+        // to complete)
+        outstanding_idle_dones = Numeric.int_floor(outstanding_idle_dones - 1, 0);
         
         // Only return to CONNECTED if no other IDLE commands are outstanding (and only signal
         // if leaving IDLE state for another)

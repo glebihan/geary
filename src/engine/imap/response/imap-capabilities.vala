@@ -1,4 +1,4 @@
-/* Copyright 2012-2014 Yorba Foundation
+/* Copyright 2012-2015 Yorba Foundation
  *
  * This software is licensed under the GNU Lesser General Public License
  * (version 2.1 or later).  See the COPYING file in this distribution.
@@ -30,7 +30,7 @@ public class Geary.Imap.Capabilities : Geary.GenericCapabilities {
     }
 
     public bool add_parameter(StringParameter stringp) {
-        return parse_and_add_capability(stringp.value);
+        return parse_and_add_capability(stringp.ascii);
     }
 
     public override string to_string() {
@@ -56,7 +56,7 @@ public class Geary.Imap.Capabilities : Geary.GenericCapabilities {
     }
     
     /**
-     * Indicates the {@link ClientSession{ reported support for SPECIAL-USE.
+     * Indicates the {@link ClientSession} reported support for SPECIAL-USE.
      *
      * See [[https://tools.ietf.org/html/rfc6154]]
      */

@@ -1,4 +1,4 @@
-/* Copyright 2011-2014 Yorba Foundation
+/* Copyright 2011-2015 Yorba Foundation
  *
  * This software is licensed under the GNU Lesser General Public License
  * (version 2.1 or later).  See the COPYING file in this distribution.
@@ -34,7 +34,7 @@ private class Geary.ImapDB.MessageRow {
     public string? email_flags { get; set; default = null; }
     public string? internaldate { get; set; default = null; }
     public time_t internaldate_time_t { get; set; default = -1; }
-    public long rfc822_size { get; set; default = -1; }
+    public int64 rfc822_size { get; set; default = -1; }
     
     public MessageRow() {
     }
@@ -93,7 +93,7 @@ private class Geary.ImapDB.MessageRow {
         if (fields.is_all_set(Geary.Email.Field.PROPERTIES)) {
             internaldate = results.string_for("internaldate");
             internaldate_time_t = (time_t) results.int64_for("internaldate_time_t");
-            rfc822_size = results.long_for("rfc822_size");
+            rfc822_size = results.int64_for("rfc822_size");
         }
     }
     

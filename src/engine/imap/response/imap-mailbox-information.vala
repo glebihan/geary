@@ -1,4 +1,4 @@
-/* Copyright 2011-2012 Yorba Foundation
+/* Copyright 2011-2015 Yorba Foundation
  *
  * This software is licensed under the GNU Lesser General Public License
  * (version 2.1 or later).  See the COPYING file in this distribution. 
@@ -14,7 +14,7 @@
  * @see ListCommand
  */
 
-public class Geary.Imap.MailboxInformation : Object {
+public class Geary.Imap.MailboxInformation : BaseObject {
     /**
      * Name of the mailbox.
      */
@@ -65,7 +65,7 @@ public class Geary.Imap.MailboxInformation : Object {
                 continue;
             }
             
-            attrlist.add(new MailboxAttribute(stringp.value));
+            attrlist.add(new MailboxAttribute(stringp.ascii));
         }
         
         // decode everything
@@ -77,10 +77,10 @@ public class Geary.Imap.MailboxInformation : Object {
         // Set \Inbox to standard path
         if (canonical_inbox && Geary.Imap.MailboxAttribute.SPECIAL_FOLDER_INBOX in attributes) {
             return new MailboxInformation(MailboxSpecifier.inbox,
-                (delim != null) ? delim.nullable_value : null, attributes);
+                (delim != null) ? delim.nullable_ascii : null, attributes);
         } else {
             return new MailboxInformation(new MailboxSpecifier.from_parameter(mailbox),
-                (delim != null) ? delim.nullable_value : null, attributes);
+                (delim != null) ? delim.nullable_ascii : null, attributes);
         }
     }
     
@@ -93,6 +93,10 @@ public class Geary.Imap.MailboxInformation : Object {
      */
     public Geary.FolderPath get_path(MailboxSpecifier? inbox_specifier) {
         return mailbox.to_folder_path(delim, inbox_specifier);
+    }
+    
+    public string to_string() {
+        return "%s/%s".printf(mailbox.to_string(), attrs.to_string());
     }
 }
 

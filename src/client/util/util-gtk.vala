@@ -1,4 +1,4 @@
-/* Copyright 2012-2014 Yorba Foundation
+/* Copyright 2012-2015 Yorba Foundation
  *
  * This software is licensed under the GNU Lesser General Public License
  * (version 2.1 or later).  See the COPYING file in this distribution.
@@ -118,6 +118,24 @@ void apply_style(Gtk.Widget widget, string style) {
     } catch (Error e) {
         warning("Could not load style: %s", e.message);
     }
+}
+
+/**
+ * This is not bound in Vala < 0.26.
+ */
+[CCode(cname = "g_binding_unbind")]
+extern void unbind(Binding binding);
+
+/**
+ * Set xalign property on Gtk.Label in a compatible way.
+ *
+ * GtkMisc is being deprecated in GTK+ 3 and the "xalign" property has been moved to GtkLabel.  This
+ * causes compatibility problems with newer versions of Vala generating code that won't link with
+ * older versions of GTK+.  This is a convenience method until Geary requires GTK+ 3.16 as its
+ * minimum GTK+ version.
+ */
+public void set_label_xalign(Gtk.Label label, float xalign) {
+    label.set("xalign", xalign);
 }
 
 }

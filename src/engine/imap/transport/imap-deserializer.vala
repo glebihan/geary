@@ -1,4 +1,4 @@
-/* Copyright 2011-2014 Yorba Foundation
+/* Copyright 2011-2015 Yorba Foundation
  *
  * This software is licensed under the GNU Lesser General Public License
  * (version 2.1 or later).  See the COPYING file in this distribution.
@@ -94,6 +94,9 @@ public class Geary.Imap.Deserializer : BaseObject {
      * {@link UnquotedStringParameter}s, {@link ResponseCode}, and {@link ListParameter}s.
      * Deserializer does not produce any other kind of Parameter due to its inability to deduce
      * them from syntax alone.  ResponseCode, however, can be.
+     *
+     * All strings are ASCII (7-bit) with control characters stripped (with the exception of
+     * {@link QuotedStringParameter} which allows for some control characters).
      */
     public signal void parameters_ready(RootParameters root);
     
@@ -295,7 +298,7 @@ public class Geary.Imap.Deserializer : BaseObject {
             
             bytes_received(bytes_read);
             
-            push_line(line);
+            push_line(line, bytes_read);
         } catch (Error err) {
             push_error(err);
             
@@ -335,15 +338,20 @@ public class Geary.Imap.Deserializer : BaseObject {
         next_deserialize_step();
     }
     
-    // Push a line (without the CRLF!).
-    private Mode push_line(string line) {
+    // Push a line (without the CRLF!).  Because DataInputStream reads to EOL but accepts all other
+    // characters, it's possible for NULs to be embedded in the string, so the count must be passed
+    // as well (and shouldn't be -1!)
+    private Mode push_line(string line, size_t count) {
         assert(get_mode() == Mode.LINE);
         
-        int index = 0;
-        for (;;) {
-            char ch = line[index++];
-            if (ch == String.EOS)
-                break;
+        for (long ctr = 0; ctr < count; ctr++) {
+            char ch = line[ctr];
+            if (ch == String.EOS) {
+                // drop on the floor; IMAP spec does not allow NUL in lines at all, see
+                // http://tools.ietf.org/html/rfc3501#section-9 note 3.
+                // This also catches the terminating NUL.
+                continue;
+            }
             
             if (fsm.issue(Event.CHAR, &ch) == State.FAILED) {
                 deserialize_failure();
@@ -421,7 +429,7 @@ public class Geary.Imap.Deserializer : BaseObject {
         if (current_string == null || String.is_empty(current_string.str))
             return false;
         
-        return String.stri_equal(current_string.str, cmp);
+        return Ascii.stri_equal(current_string.str, cmp);
     }
     
     private void append_to_string(char ch) {
@@ -432,7 +440,7 @@ public class Geary.Imap.Deserializer : BaseObject {
     }
     
     private void save_string_parameter(bool quoted) {
-        // deal with empty quoted strings
+        // deal with empty strings
         if (!quoted && is_current_string_empty())
             return;
         
@@ -441,6 +449,8 @@ public class Geary.Imap.Deserializer : BaseObject {
         
         if (quoted)
             save_parameter(new QuotedStringParameter(str));
+        else if (NumberParameter.is_ascii_numeric(str, null))
+            save_parameter(new NumberParameter.from_ascii(str));
         else
             save_parameter(new UnquotedStringParameter(str));
         

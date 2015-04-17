@@ -1,4 +1,4 @@
-/* Copyright 2012-2014 Yorba Foundation
+/* Copyright 2012-2015 Yorba Foundation
  *
  * This software is licensed under the GNU Lesser General Public License
  * (version 2.1 or later).  See the COPYING file in this distribution.
@@ -15,7 +15,7 @@ private class Geary.ImapEngine.MarkEmail : Geary.ImapEngine.SendReplayOperation 
     public MarkEmail(MinimalFolder engine, Gee.List<Geary.EmailIdentifier> to_mark, 
         Geary.EmailFlags? flags_to_add, Geary.EmailFlags? flags_to_remove, 
         Cancellable? cancellable = null) {
-        base("MarkEmail");
+        base("MarkEmail", OnError.RETRY);
         
         this.engine = engine;
         
@@ -53,7 +53,7 @@ private class Geary.ImapEngine.MarkEmail : Geary.ImapEngine.SendReplayOperation 
         Gee.Map<Geary.EmailIdentifier, Geary.EmailFlags>? map = yield engine.local_folder.get_email_flags_async(
             original_flags.keys, cancellable);
         if (map != null && map.size > 0)
-            engine.notify_email_flags_changed(map);
+            engine.replay_notify_email_flags_changed(map);
         
         return ReplayOperation.Status.CONTINUE;
     }
@@ -65,10 +65,8 @@ private class Geary.ImapEngine.MarkEmail : Geary.ImapEngine.SendReplayOperation 
         
         Gee.List<Imap.MessageSet> msg_sets = Imap.MessageSet.uid_sparse(
             ImapDB.EmailIdentifier.to_uids(original_flags.keys));
-        foreach (Imap.MessageSet msg_set in msg_sets) {
-            yield engine.remote_folder.mark_email_async(msg_set, flags_to_add, flags_to_remove,
-                cancellable);
-        }
+        yield engine.remote_folder.mark_email_async(msg_sets, flags_to_add, flags_to_remove,
+            cancellable);
         
         return ReplayOperation.Status.COMPLETED;
     }

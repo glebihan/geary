@@ -1,4 +1,4 @@
-/* Copyright 2011-2014 Yorba Foundation
+/* Copyright 2011-2015 Yorba Foundation
  *
  * This software is licensed under the GNU Lesser General Public License
  * (version 2.1 or later).  See the COPYING file in this distribution.
@@ -135,7 +135,7 @@ public class Geary.Imap.ListParameter : Geary.Imap.Parameter {
     /**
      * Clears the {@link ListParameter} of all its children.
      *
-     * This also clears (sets to null) the parents of all {@link ListParamater} children.
+     * This also clears (sets to null) the parents of all ListParameter's children.
      */
     public void clear() {
         // sever ties to ListParameter children
@@ -325,6 +325,44 @@ public class Geary.Imap.ListParameter : Geary.Imap.Parameter {
     }
     
     //
+    // Number retrieval
+    //
+    
+    /**
+     * Returns a {@link NumberParameter} at index, null if not of that type.
+     *
+     * @see get_if
+     */
+    public NumberParameter? get_if_number(int index) {
+        return (NumberParameter?) get_if(index, typeof(NumberParameter));
+    }
+    
+    /**
+     * Returns a {@link NumberParameter} at index.
+     *
+     * Like {@link get_as_string}, this method will attempt some coercion.  In this case,
+     * {@link QuotedStringParameter} and {@link UnquotedStringParameter}s will be converted to
+     * NumberParameter, if appropriate.
+     */
+    public NumberParameter get_as_number(int index) throws ImapError {
+        Parameter param = get_required(index);
+        
+        NumberParameter? numberp = param as NumberParameter;
+        if (numberp != null)
+            return numberp;
+        
+        StringParameter? stringp = param as StringParameter;
+        if (stringp != null) {
+            numberp = stringp.coerce_to_number_parameter();
+            if (numberp != null)
+                return numberp;
+        }
+        
+        throw new ImapError.TYPE_ERROR("Parameter %d not of type number or string (is %s)", index,
+            param.get_type().name());
+    }
+    
+    //
     // List retrieval
     //
     
@@ -420,7 +458,7 @@ public class Geary.Imap.ListParameter : Geary.Imap.Parameter {
         
         StringParameter? stringp = get_if_string(index);
         if (stringp != null)
-            return new Memory.StringBuffer(stringp.value);
+            return stringp.as_buffer();
         
         return null;
     }

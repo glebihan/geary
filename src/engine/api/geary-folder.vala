@@ -1,12 +1,30 @@
-/* Copyright 2011-2014 Yorba Foundation
+/* Copyright 2011-2015 Yorba Foundation
  *
  * This software is licensed under the GNU Lesser General Public License
  * (version 2.1 or later).  See the COPYING file in this distribution.
  */
 
-public delegate void Geary.EmailCallback(Gee.List<Geary.Email>? emails, Error? err);
+/**
+ * Folder represents the basic unit of organization for email.
+ *
+ * Each {@link Account} offers a hierarcichal listing of Folders.  Folders must be opened (with
+ * {@link open_async} before using most of its methods and should be closed with
+ * {@link close_async} when completed, even if a method has failed with an IOError.
+ *
+ * Folder offers various open states indicating when its "local" (disk or database) connection and
+ * "remote" (network) connections are ready.  Generally the local connection opens first and the
+ * remote connection takes time to establish.  When in this state, Folder's methods still operate,
+ * but will only return locally stored information.
+ *
+ * Folder only offers a small selection of guaranteed functionality (in particular, the ability
+ * to list its {@link Email}).  Additional functionality for Folders is indicated by the presence
+ * of {@link FolderSupport} interfaces, include {@link FolderSupport.Remove},
+ * {@link FolderSupport.Copy}, and so forth.
+ *
+ * @see Geary.SpecialFolderType
+ */
 
-public interface Geary.Folder : BaseObject {
+public abstract class Geary.Folder : BaseObject {
     public enum OpenState {
         CLOSED,
         OPENING,
@@ -100,8 +118,7 @@ public interface Geary.Folder : BaseObject {
          */
         FORCE_UPDATE,
         /**
-         * Include the provided EmailIdentifier (only respected by {@link list_email_by_id_async} and
-         * {@link lazy_list_email_by_id}).
+         * Include the provided EmailIdentifier (only respected by {@link list_email_by_id_async}.
          */
         INCLUDING_ID,
         /**
@@ -146,7 +163,7 @@ public interface Geary.Folder : BaseObject {
     
     public abstract Geary.SpecialFolderType special_folder_type { get; }
     
-    public abstract Geary.ProgressMonitor opening_monitor { get; protected set; }
+    public abstract Geary.ProgressMonitor opening_monitor { get; }
     
     /**
      * Fired when the folder is successfully opened by a caller.
@@ -289,38 +306,82 @@ public interface Geary.Folder : BaseObject {
      */
     public signal void display_name_changed();
     
-    protected abstract void notify_opened(OpenState state, int count);
+    protected Folder() {
+    }
     
-    protected abstract void notify_open_failed(OpenFailed failure, Error? err);
+    protected virtual void notify_opened(Geary.Folder.OpenState state, int count) {
+        opened(state, count);
+    }
     
-    protected abstract void notify_closed(CloseReason reason);
+    protected virtual void notify_open_failed(Geary.Folder.OpenFailed failure, Error? err) {
+        open_failed(failure, err);
+    }
     
-    protected abstract void notify_email_appended(Gee.Collection<Geary.EmailIdentifier> ids);
+    protected virtual void notify_closed(Geary.Folder.CloseReason reason) {
+        closed(reason);
+    }
     
-    protected abstract void notify_email_locally_appended(Gee.Collection<Geary.EmailIdentifier> ids);
+    protected virtual void notify_email_appended(Gee.Collection<Geary.EmailIdentifier> ids) {
+        email_appended(ids);
+    }
     
-    protected abstract void notify_email_inserted(Gee.Collection<Geary.EmailIdentifier> ids);
+    protected virtual void notify_email_locally_appended(Gee.Collection<Geary.EmailIdentifier> ids) {
+        email_locally_appended(ids);
+    }
     
-    protected abstract void notify_email_locally_inserted(Gee.Collection<Geary.EmailIdentifier> ids);
+    protected virtual void notify_email_inserted(Gee.Collection<Geary.EmailIdentifier> ids) {
+        email_inserted(ids);
+    }
     
-    protected abstract void notify_email_removed(Gee.Collection<Geary.EmailIdentifier> ids);
+    protected virtual void notify_email_locally_inserted(Gee.Collection<Geary.EmailIdentifier> ids) {
+        email_locally_inserted(ids);
+    }
     
-    protected abstract void notify_email_count_changed(int new_count, CountChangeReason reason);
+    protected virtual void notify_email_removed(Gee.Collection<Geary.EmailIdentifier> ids) {
+        email_removed(ids);
+    }
     
-    protected abstract void notify_email_flags_changed(Gee.Map<Geary.EmailIdentifier,
-        Geary.EmailFlags> flag_map);
+    protected virtual void notify_email_count_changed(int new_count, Folder.CountChangeReason reason) {
+        email_count_changed(new_count, reason);
+    }
     
-    protected abstract void notify_email_locally_complete(Gee.Collection<Geary.EmailIdentifier> ids);
+    protected virtual void notify_email_flags_changed(Gee.Map<Geary.EmailIdentifier,
+        Geary.EmailFlags> flag_map) {
+        email_flags_changed(flag_map);
+    }
     
-    protected abstract void notify_special_folder_type_changed(Geary.SpecialFolderType old_type,
-        Geary.SpecialFolderType new_type);
+    protected virtual void notify_email_locally_complete(Gee.Collection<Geary.EmailIdentifier> ids) {
+        email_locally_complete(ids);
+    }
     
-    protected abstract void notify_display_name_changed();
+    /**
+     * In its default implementation, this will also call {@link notify_display_name_changed} since
+     * that's often the case; if not, subclasses should override.
+     */
+    protected virtual void notify_special_folder_type_changed(Geary.SpecialFolderType old_type,
+        Geary.SpecialFolderType new_type) {
+        special_folder_type_changed(old_type, new_type);
+        
+        // in default implementation, this may also mean the display name changed; subclasses may
+        // override this behavior, but no way to detect this, so notify
+        if (special_folder_type != Geary.SpecialFolderType.NONE)
+            notify_display_name_changed();
+    }
+    
+    protected virtual void notify_display_name_changed() {
+        display_name_changed();
+    }
     
     /**
      * Returns a name suitable for displaying to the user.
+     *
+     * Default is to display the basename of the Folder's path, unless it's a special folder,
+     * in which case {@link SpecialFolderType.get_display_name} is returned.
      */
-    public abstract string get_display_name();
+    public virtual string get_display_name() {
+        return (special_folder_type == Geary.SpecialFolderType.NONE)
+            ? path.basename : special_folder_type.get_display_name();
+    }
     
     /**
      * Returns the state of the Folder's connections to the local and remote stores.
@@ -391,9 +452,20 @@ public interface Geary.Folder : BaseObject {
      * tearing down network connections, closing files, and so forth.  See "closed" for signals
      * indicating the closing states.
      *
-     * If the Folder is already closed, the method silently returns.
+     * Returns true if the open count decrements to zero and the folder is ''closing''.  Use
+     * {@link wait_for_close_async} to block until the folder is completely closed.  Otherwise,
+     * returns false.  Note that this semantic is slightly different than the result code for
+     * {@link open_async}.
      */
-    public abstract async void close_async(Cancellable? cancellable = null) throws Error;
+    public abstract async bool close_async(Cancellable? cancellable = null) throws Error;
+    
+    /**
+     * Wait for the {@link Folder} to fully close.
+     *
+     * Unlike {@link wait_for_open_async}, this will ''always'' block until a {@link Folder} is
+     * closed, even if it's not open.
+     */
+    public abstract async void wait_for_close_async(Cancellable? cancellable = null) throws Error;
     
     /**
      * Find the lowest- and highest-ordered {@link EmailIdentifier}s in the
@@ -422,6 +494,8 @@ public interface Geary.Folder : BaseObject {
      * EmailIdentifier implies that the top most email is included in the result (i.e.
      * ListFlags.INCLUDING_ID is not required);
      *
+     * If the remote connection fails, this call will return locally-available Email without error.
+     *
      * There's no guarantee of the returned messages' order.
      *
      * The Folder must be opened prior to attempting this operation.
@@ -431,45 +505,20 @@ public interface Geary.Folder : BaseObject {
         throws Error;
     
     /**
-     * Similar in contract to lazy_list_email_async(), but uses Geary.EmailIdentifier rather than
-     * positional addressing, much like list_email_by_id_async().  See that method for more
-     * information on its contract and how the count and flags parameters work.
-     *
-     * Like the other "lazy" methods, this method will call EmailCallback while the operation is
-     * processing.  This method does not block.
-     *
-     * The Folder must be opened prior to attempting this operation.
-     */
-    public abstract void lazy_list_email_by_id(Geary.EmailIdentifier? initial_id, int count,
-        Geary.Email.Field required_fields, ListFlags flags, EmailCallback cb, Cancellable? cancellable = null);
-    
-    /**
      * Similar in contract to {@link list_email_by_id_async}, but uses a list of
      * {@link Geary.EmailIdentifier}s rather than a range.
      *
      * Any Gee.Collection is accepted for EmailIdentifiers, but the returned list will only contain
      * one email for each requested; duplicates are ignored.  ListFlags.INCLUDING_ID is ignored
-     * for this call and {@link lazy_list_email_by_sparse_id}.
+     * for this call.
+     *
+     * If the remote connection fails, this call will return locally-available Email without error.
      *
      * The Folder must be opened prior to attempting this operation.
      */
     public abstract async Gee.List<Geary.Email>? list_email_by_sparse_id_async(
         Gee.Collection<Geary.EmailIdentifier> ids, Geary.Email.Field required_fields, ListFlags flags,
         Cancellable? cancellable = null) throws Error;
-    
-    /**
-     * See {@link list_email_by_id_async} and {@link list_email_by_sparse_id_async}
-     * for more information on {@link EmailIdentifier}s and how the flags and callback parameter
-     * works.
-     *
-     * Like the other "lazy" method, this method will call EmailCallback while the operation is
-     * processing.  This method does not block.
-     *
-     * The Folder must be opened prior to attempting this operation.
-     */
-    public abstract void lazy_list_email_by_sparse_id(Gee.Collection<Geary.EmailIdentifier> ids,
-        Geary.Email.Field required_fields, ListFlags flags, EmailCallback cb,
-        Cancellable? cancellable = null);
     
     /**
      * Returns the locally available Geary.Email.Field fields for the specified emails.  If a
@@ -507,6 +556,8 @@ public interface Geary.Folder : BaseObject {
     /**
      * Used for debugging.  Should not be used for user-visible labels.
      */
-    public abstract string to_string();
+    public virtual string to_string() {
+        return "%s:%s".printf(account.to_string(), path.to_string());
+    }
 }
 

@@ -1,4 +1,4 @@
-/* Copyright 2011-2014 Yorba Foundation
+/* Copyright 2011-2015 Yorba Foundation
  *
  * This software is licensed under the GNU Lesser General Public License
  * (version 2.1 or later).  See the COPYING file in this distribution.
@@ -28,8 +28,7 @@ public class Geary.Nonblocking.Mailbox<G> : BaseObject {
     private Nonblocking.Spinlock spinlock = new Nonblocking.Spinlock();
     
     public Mailbox(owned CompareDataFunc<G>? comparator = null) {
-        // can't use ternary here, Vala bug
-        if (comparator == null)
+        if (comparator == null && !typeof(G).is_a(typeof(Gee.Comparable)))
             queue = new Gee.LinkedList<G>();
         else
             queue = new Gee.PriorityQueue<G>((owned) comparator);
@@ -73,7 +72,7 @@ public class Geary.Nonblocking.Mailbox<G> : BaseObject {
     /**
      * Remove messages matching the given predicate.  Return the removed messages.
      */
-    public Gee.Collection<G> remove_matching(owned Gee.Predicate<G> predicate) {
+    public Gee.Collection<G> revoke_matching(owned Gee.Predicate<G> predicate) {
         Gee.ArrayList<G> removed = new Gee.ArrayList<G>();
         // Iterate over a copy so we can modify the original.
         foreach (G msg in queue.to_array()) {

@@ -1,4 +1,4 @@
-/* Copyright 2013-2014 Yorba Foundation
+/* Copyright 2013-2015 Yorba Foundation
  *
  * This software is licensed under the GNU Lesser General Public License
  * (version 2.1 or later).  See the COPYING file in this distribution.
@@ -7,11 +7,11 @@
 /**
  * Gmail-specific SearchFolder implementation.
  */
-public class Geary.ImapEngine.GmailSearchFolder : Geary.SearchFolder {
+private class Geary.ImapEngine.GmailSearchFolder : ImapDB.SearchFolder {
     private Geary.App.EmailStore email_store;
     
     public GmailSearchFolder(Geary.Account account) {
-        base(account);
+        base (account);
         
         email_store = new Geary.App.EmailStore(account);
         

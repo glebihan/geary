@@ -1,4 +1,4 @@
-/* Copyright 2011-2014 Yorba Foundation
+/* Copyright 2011-2015 Yorba Foundation
  *
  * This software is licensed under the GNU Lesser General Public License
  * (version 2.1 or later).  See the COPYING file in this distribution.
@@ -173,6 +173,41 @@ private class Geary.ImapDB.Folder : BaseObject, Geary.ReferenceSemantics {
         properties.set_select_examine_message_count(count);
     }
     
+    public async Imap.StatusData fetch_status_data(ListFlags flags, Cancellable? cancellable) throws Error {
+        Imap.StatusData? status_data = null;
+        yield db.exec_transaction_async(Db.TransactionType.RO, (cx) => {
+            Db.Statement stmt = cx.prepare("""
+                SELECT uid_next, uid_validity, unread_count
+                FROM FolderTable
+                WHERE id = ?
+            """);
+            stmt.bind_rowid(0, folder_id);
+            
+            Db.Result result = stmt.exec(cancellable);
+            if (result.finished)
+                return Db.TransactionOutcome.DONE;
+            
+            int messages = do_get_email_count(cx, flags, cancellable);
+            Imap.UID? uid_next = !result.is_null_for("uid_next")
+                ? new Imap.UID(result.int64_for("uid_next"))
+                : null;
+            Imap.UIDValidity? uid_validity = !result.is_null_for("uid_validity")
+                ? new Imap.UIDValidity(result.int64_for("uid_validity"))
+                : null;
+            
+            // Note that recent is not stored
+            status_data = new Imap.StatusData(new Imap.MailboxSpecifier.from_folder_path(path, null),
+                messages, 0, uid_next, uid_validity, result.int_for("unread_count"));
+            
+            return Db.TransactionOutcome.DONE;
+        }, cancellable);
+        
+        if (status_data == null)
+            throw new EngineError.NOT_FOUND("%s STATUS not found in database", path.to_string());
+        
+        return status_data;
+    }
+    
     // Returns a Map with the created or merged email as the key and the result of the operation
     // (true if created, false if merged) as the value.  Note that every email
     // object passed in's EmailIdentifier will be fully filled out by this
@@ -282,9 +317,8 @@ private class Geary.ImapDB.Folder : BaseObject, Geary.ReferenceSemantics {
             StringBuilder sql = new StringBuilder("""
                 SELECT MessageLocationTable.message_id, ordering, remove_marker
                 FROM MessageLocationTable
+                WHERE folder_id = ?
             """);
-            
-            sql.append("WHERE folder_id = ? ");
             
             if (oldest_to_newest)
                 sql.append("AND ordering >= ? ");
@@ -296,14 +330,16 @@ private class Geary.ImapDB.Folder : BaseObject, Geary.ReferenceSemantics {
             else
                 sql.append("ORDER BY ordering DESC ");
             
+            if (count != int.MAX)
+                sql.append("LIMIT ? ");
+            
             Db.Statement stmt = cx.prepare(sql.str);
             stmt.bind_rowid(0, folder_id);
             stmt.bind_int64(1, start_uid.value);
+            if (count != int.MAX)
+                stmt.bind_int(2, count);
             
-            locations = do_results_to_locations(stmt.exec(cancellable), flags, cancellable);
-            
-            if (locations.size > count)
-                locations = locations.slice(0, count);
+            locations = do_results_to_locations(stmt.exec(cancellable), count, flags, cancellable);
             
             return Db.TransactionOutcome.SUCCESS;
         }, cancellable);
@@ -361,7 +397,7 @@ private class Geary.ImapDB.Folder : BaseObject, Geary.ReferenceSemantics {
             stmt.bind_int64(1, start_uid.value);
             stmt.bind_int64(2, end_uid.value);
             
-            locations = do_results_to_locations(stmt.exec(cancellable), flags, cancellable);
+            locations = do_results_to_locations(stmt.exec(cancellable), int.MAX, flags, cancellable);
             
             return Db.TransactionOutcome.SUCCESS;
         }, cancellable);
@@ -405,7 +441,7 @@ private class Geary.ImapDB.Folder : BaseObject, Geary.ReferenceSemantics {
             stmt.bind_int64(1, start_uid.value);
             stmt.bind_int64(2, end_uid.value);
             
-            locations = do_results_to_locations(stmt.exec(cancellable), flags, cancellable);
+            locations = do_results_to_locations(stmt.exec(cancellable), int.MAX, flags, cancellable);
             
             return Db.TransactionOutcome.SUCCESS;
         }, cancellable);
@@ -460,7 +496,7 @@ private class Geary.ImapDB.Folder : BaseObject, Geary.ReferenceSemantics {
             Db.Statement stmt = cx.prepare(sql.str);
             stmt.bind_rowid(0, folder_id);
             
-            locations = do_results_to_locations(stmt.exec(cancellable), flags, cancellable);
+            locations = do_results_to_locations(stmt.exec(cancellable), int.MAX, flags, cancellable);
             
             return Db.TransactionOutcome.SUCCESS;
         }, cancellable);
@@ -601,7 +637,7 @@ private class Geary.ImapDB.Folder : BaseObject, Geary.ReferenceSemantics {
     }
     
     // pos is 1-based.  This method does not respect messages marked for removal.
-    public async ImapDB.EmailIdentifier? get_id_at_async(int pos, Cancellable? cancellable) throws Error {
+    public async ImapDB.EmailIdentifier? get_id_at_async(int64 pos, Cancellable? cancellable) throws Error {
         assert(pos >= 1);
         
         ImapDB.EmailIdentifier? id = null;
@@ -615,7 +651,7 @@ private class Geary.ImapDB.Folder : BaseObject, Geary.ReferenceSemantics {
                 OFFSET ?
             """);
             stmt.bind_rowid(0, folder_id);
-            stmt.bind_int(1, pos - 1);
+            stmt.bind_int64(1, pos - 1);
             
             Db.Result results = stmt.exec(cancellable);
             if (!results.finished)
@@ -935,16 +971,22 @@ private class Geary.ImapDB.Folder : BaseObject, Geary.ReferenceSemantics {
     // on most operations unless ListFlags.INCLUDE_MARKED_REMOVED is true.  Use detach_email_async()
     // to formally remove the messages from the folder.
     //
+    // If ids is null, all messages are marked for removal.
+    //
     // Returns a collection of ImapDB.EmailIdentifiers *with the UIDs set* for this folder.
     // Supplied EmailIdentifiers not in this Folder will not be included.
     public async Gee.Set<ImapDB.EmailIdentifier>? mark_removed_async(
-        Gee.Collection<ImapDB.EmailIdentifier> ids, bool mark_removed, Cancellable? cancellable)
+        Gee.Collection<ImapDB.EmailIdentifier>? ids, bool mark_removed, Cancellable? cancellable)
         throws Error {
         int unread_count = 0;
         Gee.Set<ImapDB.EmailIdentifier> removed_ids = new Gee.HashSet<ImapDB.EmailIdentifier>();
         yield db.exec_transaction_async(Db.TransactionType.RW, (cx) => {
-            Gee.List<LocationIdentifier?> locs = do_get_locations_for_ids(cx, ids,
-                ListFlags.INCLUDE_MARKED_FOR_REMOVE, cancellable);
+            Gee.List<LocationIdentifier?> locs;
+            if (ids != null)
+                locs = do_get_locations_for_ids(cx, ids, ListFlags.INCLUDE_MARKED_FOR_REMOVE, cancellable);
+            else
+                locs = do_get_all_locations(cx, ListFlags.INCLUDE_MARKED_FOR_REMOVE, cancellable);
+            
             if (locs == null || locs.size == 0)
                 return Db.TransactionOutcome.DONE;
             
@@ -1180,7 +1222,7 @@ private class Geary.ImapDB.Folder : BaseObject, Geary.ReferenceSemantics {
         Imap.EmailProperties? imap_properties = (Imap.EmailProperties) email.properties;
         string? internaldate = (imap_properties != null && imap_properties.internaldate != null)
             ? imap_properties.internaldate.serialize() : null;
-        long rfc822_size = (imap_properties != null) ? imap_properties.rfc822_size.value : -1;
+        int64 rfc822_size = (imap_properties != null) ? imap_properties.rfc822_size.value : -1;
         
         if (String.is_empty(internaldate) || rfc822_size < 0) {
             debug("Unable to detect duplicates for %s (%s available but invalid)", email.id.to_string(),
@@ -1202,8 +1244,8 @@ private class Geary.ImapDB.Folder : BaseObject, Geary.ReferenceSemantics {
         
         int64 message_id = results.rowid_at(0);
         if (results.next(cancellable)) {
-            debug("Warning: multiple messages with the same internaldate (%s) and size (%lu) in %s",
-                internaldate, rfc822_size, to_string());
+            debug("Warning: multiple messages with the same internaldate (%s) and size (%s) in %s",
+                internaldate, rfc822_size.to_string(), to_string());
         }
         
         Db.Statement search_stmt = cx.prepare(
@@ -1323,7 +1365,7 @@ private class Geary.ImapDB.Folder : BaseObject, Geary.ReferenceSemantics {
         stmt.bind_string(16, row.email_flags);
         stmt.bind_string(17, row.internaldate);
         stmt.bind_int64(18, row.internaldate_time_t);
-        stmt.bind_long(19, row.rfc822_size);
+        stmt.bind_int64(19, row.rfc822_size);
         
         int64 message_id = stmt.exec_insert(cancellable);
         
@@ -1546,7 +1588,7 @@ private class Geary.ImapDB.Folder : BaseObject, Geary.ReferenceSemantics {
             fetch_stmt.bind_rowid(0, location.message_id);
             
             Db.Result results = fetch_stmt.exec(cancellable);
-            if (results.finished)
+            if (results.finished || results.is_null_at(0))
                 continue;
             
             map.set(location.email_id,
@@ -1732,7 +1774,7 @@ private class Geary.ImapDB.Folder : BaseObject, Geary.ReferenceSemantics {
                 "UPDATE MessageTable SET internaldate=?, internaldate_time_t=?, rfc822_size=? WHERE id=?");
             stmt.bind_string(0, row.internaldate);
             stmt.bind_int64(1, row.internaldate_time_t);
-            stmt.bind_long(2, row.rfc822_size);
+            stmt.bind_int64(2, row.rfc822_size);
             stmt.bind_rowid(3, row.id);
             
             stmt.exec(cancellable);
@@ -1983,6 +2025,21 @@ private class Geary.ImapDB.Folder : BaseObject, Geary.ReferenceSemantics {
             File saved_file = ImapDB.Attachment.generate_file(db.db_file.get_parent(), message_id,
                 attachment_id, filename);
             
+            // On the off-chance this is marked for deletion, unmark it
+            try {
+                stmt = cx.prepare("""
+                    DELETE FROM DeleteAttachmentFileTable
+                    WHERE filename = ?
+                """);
+                stmt.bind_string(0, saved_file.get_path());
+                
+                stmt.exec(cancellable);
+            } catch (Error err) {
+                debug("Unable to delete from DeleteAttachmentFileTable: %s", err.message);
+                
+                // not a deal-breaker, fall through
+            }
+            
             debug("Saving attachment to %s", saved_file.get_path());
             
             try {
@@ -2084,7 +2141,7 @@ private class Geary.ImapDB.Folder : BaseObject, Geary.ReferenceSemantics {
     
     // Db.Result must include columns for "message_id", "ordering", and "remove_marker" from the
     // MessageLocationTable
-    private Gee.List<LocationIdentifier> do_results_to_locations(Db.Result results,
+    private Gee.List<LocationIdentifier> do_results_to_locations(Db.Result results, int count,
         ListFlags flags, Cancellable? cancellable) throws Error {
         Gee.List<LocationIdentifier> locations = new Gee.ArrayList<LocationIdentifier>();
         
@@ -2098,6 +2155,8 @@ private class Geary.ImapDB.Folder : BaseObject, Geary.ReferenceSemantics {
                 continue;
             
             locations.add(location);
+            if (locations.size >= count)
+                break;
         } while (results.next(cancellable));
         
         return locations;
@@ -2192,8 +2251,8 @@ private class Geary.ImapDB.Folder : BaseObject, Geary.ReferenceSemantics {
         Db.Statement stmt = cx.prepare(sql.str);
         stmt.bind_rowid(0, folder_id);
         
-        Gee.List<LocationIdentifier> locs = do_results_to_locations(stmt.exec(cancellable), flags,
-            cancellable);
+        Gee.List<LocationIdentifier> locs = do_results_to_locations(stmt.exec(cancellable), int.MAX,
+            flags, cancellable);
         
         return (locs.size > 0) ? locs : null;
     }
@@ -2241,14 +2300,32 @@ private class Geary.ImapDB.Folder : BaseObject, Geary.ReferenceSemantics {
         Db.Statement stmt = cx.prepare(sql.str);
         stmt.bind_rowid(0, folder_id);
         
-        Gee.List<LocationIdentifier> locs = do_results_to_locations(stmt.exec(cancellable), flags,
-            cancellable);
+        Gee.List<LocationIdentifier> locs = do_results_to_locations(stmt.exec(cancellable), int.MAX,
+            flags, cancellable);
+        
+        return (locs.size > 0) ? locs : null;
+    }
+    
+    private Gee.List<LocationIdentifier>? do_get_all_locations(Db.Connection cx, ListFlags flags,
+        Cancellable? cancellable) throws Error {
+        Db.Statement stmt = cx.prepare("""
+            SELECT message_id, ordering, remove_marker
+            FROM MessageLocationTable
+            WHERE folder_id = ?
+        """);
+        stmt.bind_rowid(0, folder_id);
+        
+        Gee.List<LocationIdentifier> locs = do_results_to_locations(stmt.exec(cancellable), int.MAX,
+            flags, cancellable);
         
         return (locs.size > 0) ? locs : null;
     }
     
     private int do_get_unread_count_for_ids(Db.Connection cx,
-        Gee.Collection<ImapDB.EmailIdentifier> ids, Cancellable? cancellable) throws Error {
+        Gee.Collection<ImapDB.EmailIdentifier>? ids, Cancellable? cancellable) throws Error {
+        if (ids == null || ids.size == 0)
+            return 0;
+        
         // Fetch flags for each email and update this folder's unread count.
         // (Note that this only flags for emails which have NOT been marked for removal
         // are included.)

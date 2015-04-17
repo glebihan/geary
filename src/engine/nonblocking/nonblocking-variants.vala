@@ -1,11 +1,11 @@
-/* Copyright 2011-2014 Yorba Foundation
+/* Copyright 2011-2015 Yorba Foundation
  *
  * This software is licensed under the GNU Lesser General Public License
  * (version 2.1 or later).  See the COPYING file in this distribution.
  */
 
 /**
- * A Semaphore is a broadcasting, manually-resetting {@link AbstractSempahore}.
+ * A Semaphore is a broadcasting, manually-resetting {@link AbstractSemaphore}.
  */
 
 public class Geary.Nonblocking.Semaphore : Geary.Nonblocking.AbstractSemaphore {
@@ -15,7 +15,7 @@ public class Geary.Nonblocking.Semaphore : Geary.Nonblocking.AbstractSemaphore {
 }
 
 /**
- * An Event is a broadcasting, auto-resetting {@link AbstractSempahore}.
+ * An Event is a broadcasting, auto-resetting {@link AbstractSemaphore}.
  */
 
 public class Geary.Nonblocking.Event : Geary.Nonblocking.AbstractSemaphore {
@@ -25,7 +25,7 @@ public class Geary.Nonblocking.Event : Geary.Nonblocking.AbstractSemaphore {
 }
 
 /**
- * A Spinlock is a single-notifying, auto-resetting {@link AbstractSempahore}.
+ * A Spinlock is a single-notifying, auto-resetting {@link AbstractSemaphore}.
  */
 
 public class Geary.Nonblocking.Spinlock : Geary.Nonblocking.AbstractSemaphore {

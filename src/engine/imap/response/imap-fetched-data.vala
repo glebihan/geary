@@ -1,4 +1,4 @@
-/* Copyright 2011-2012 Yorba Foundation
+/* Copyright 2011-2015 Yorba Foundation
  *
  * This software is licensed under the GNU Lesser General Public License
  * (version 2.1 or later).  See the COPYING file in this distribution. 
@@ -49,7 +49,8 @@ public class Geary.Imap.FetchedData : Object {
         if (!server_data.get_as_string(2).equals_ci(FetchCommand.NAME))
             throw new ImapError.PARSE_ERROR("Not FETCH data: %s", server_data.to_string());
         
-        FetchedData fetched_data = new FetchedData(new SequenceNumber(server_data.get_as_string(1).as_int()));
+        FetchedData fetched_data = new FetchedData(
+            new SequenceNumber.checked(server_data.get_as_string(1).as_int64()));
         
         // walk the list for each returned fetch data item, which is paired by its data item name
         // and the structured data itself
@@ -71,7 +72,7 @@ public class Geary.Imap.FetchedData : Object {
                 else
                     fetched_data.body_data_map.set(specifier, Memory.EmptyBuffer.instance);
             } else {
-                FetchDataSpecifier data_item = FetchDataSpecifier.decode(data_item_param.value);
+                FetchDataSpecifier data_item = FetchDataSpecifier.from_parameter(data_item_param);
                 FetchDataDecoder? decoder = data_item.get_decoder();
                 if (decoder == null) {
                     debug("Unable to decode fetch response for \"%s\": No decoder available",
@@ -94,10 +95,10 @@ public class Geary.Imap.FetchedData : Object {
     /**
      * Returns the merge of this {@link FetchedData} and the supplied one.
      *
-     * The results are undefined if both FetchData objects contain the same {@link FetchDataType}
-     * or {@link FetchBodyDataType}s.
+     * The results are undefined if both FetchData objects contain the same
+     * {@link FetchDataSpecifier} or {@link FetchBodyDataSpecifier}s.
      *
-     * See warnings at {@link body_data_map} for dealing with multiple FetchBodyDataTypes.
+     * See warnings at {@link body_data_map} for dealing with multiple FetchBodyDataSpecifiers.
      *
      * @return null if the FetchedData do not have the same {@link seq_num}.
      */

@@ -1,4 +1,4 @@
-/* Copyright 2011-2014 Yorba Foundation
+/* Copyright 2011-2015 Yorba Foundation
  *
  * This software is licensed under the GNU Lesser General Public License
  * (version 2.1 or later).  See the COPYING file in this distribution.
@@ -33,7 +33,7 @@ public class Geary.Imap.MailboxAttributes : Geary.Imap.Flags {
     public static MailboxAttributes from_list(ListParameter listp) throws ImapError {
         Gee.Collection<MailboxAttribute> list = new Gee.ArrayList<MailboxAttribute>();
         for (int ctr = 0; ctr < listp.size; ctr++)
-            list.add(new MailboxAttribute(listp.get_as_string(ctr).value));
+            list.add(new MailboxAttribute(listp.get_as_string(ctr).ascii));
         
         return new MailboxAttributes(list);
     }

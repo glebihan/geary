@@ -1,10 +1,10 @@
-/* Copyright 2011-2014 Yorba Foundation
+/* Copyright 2011-2015 Yorba Foundation
  *
  * This software is licensed under the GNU Lesser General Public License
  * (version 2.1 or later).  See the COPYING file in this distribution.
  */
 
-private abstract class Geary.ImapEngine.GenericAccount : Geary.AbstractAccount {
+private abstract class Geary.ImapEngine.GenericAccount : Geary.Account {
     private const int REFRESH_FOLDER_LIST_SEC = 2 * 60;
     private const int REFRESH_UNSEEN_SEC = 1;
     
@@ -37,6 +37,7 @@ private abstract class Geary.ImapEngine.GenericAccount : Geary.AbstractAccount {
         
         search_upgrade_monitor = local.search_index_monitor;
         db_upgrade_monitor = local.upgrade_monitor;
+        db_vacuum_monitor = local.vacuum_monitor;
         opening_monitor = new Geary.ReentrantProgressMonitor(Geary.ProgressType.ACTIVITY);
         sending_monitor = local.sending_monitor;
         
@@ -45,7 +46,7 @@ private abstract class Geary.ImapEngine.GenericAccount : Geary.AbstractAccount {
         }
         
         if (search_path == null) {
-            search_path = new SearchFolderRoot();
+            search_path = new ImapDB.SearchFolderRoot();
         }
     }
     
@@ -118,12 +119,6 @@ private abstract class Geary.ImapEngine.GenericAccount : Geary.AbstractAccount {
     }
     
     private async void internal_open_async(Cancellable? cancellable) throws Error {
-        // To prevent spurious connection failures, we make sure we have the
-        // IMAP password before attempting a connection.  This might have to be
-        // reworked when we allow passwordless logins.
-        if (!information.imap_credentials.is_complete())
-            yield information.fetch_passwords_async(ServiceFlag.IMAP);
-        
         try {
             yield local.open_async(information.settings_dir, Engine.instance.resource_dir.get_child("sql"),
                 cancellable);
@@ -145,6 +140,12 @@ private abstract class Geary.ImapEngine.GenericAccount : Geary.AbstractAccount {
         
         // Search folder.
         local_only.set(search_path, local.search_folder);
+        
+        // To prevent spurious connection failures, we make sure we have the
+        // IMAP password before attempting a connection.  This might have to be
+        // reworked when we allow passwordless logins.
+        if (!information.imap_credentials.is_complete())
+            yield information.fetch_passwords_async(ServiceFlag.IMAP);
         
         // need to back out local.open_async() if remote fails
         try {
@@ -246,7 +247,7 @@ private abstract class Geary.ImapEngine.GenericAccount : Geary.AbstractAccount {
     // Subclasses with specific SearchFolder implementations should override
     // this to return the correct subclass.
     internal virtual SearchFolder new_search_folder() {
-        return new SearchFolder(this);
+        return new ImapDB.SearchFolder(this);
     }
     
     private MinimalFolder build_folder(ImapDB.Folder local_folder) {
@@ -318,6 +319,9 @@ private abstract class Geary.ImapEngine.GenericAccount : Geary.AbstractAccount {
         if (in_refresh_unseen.contains(folder))
             return true;
         
+        // add here, remove in completed callback
+        in_refresh_unseen.add(folder);
+        
         refresh_unseen_async.begin(folder, null, on_refresh_unseen_completed);
         
         refresh_unseen_timeout_ids.unset(folder.path);
@@ -333,21 +337,29 @@ private abstract class Geary.ImapEngine.GenericAccount : Geary.AbstractAccount {
     }
     
     private async void refresh_unseen_async(Geary.Folder folder, Cancellable? cancellable) throws Error {
-        in_refresh_unseen.add(folder);
-        
         debug("Refreshing unseen counts for %s", folder.to_string());
         
-        bool folder_created;
-        Imap.Folder remote_folder = yield remote.fetch_folder_async(folder.path,
-            out folder_created, cancellable);
-        
-        if (!folder_created) {
-            int unseen_count = yield remote.fetch_unseen_count_async(folder.path, cancellable);
-            remote_folder.properties.set_status_unseen(unseen_count);
-            yield local.update_folder_status_async(remote_folder, false, cancellable);
+        try {
+            bool folder_created;
+            Imap.Folder remote_folder = yield remote.fetch_folder_async(folder.path,
+                out folder_created, null, cancellable);
+            
+            // if created, don't need to fetch count because it was fetched when it was created
+            int unseen, total;
+            if (!folder_created) {
+                yield remote.fetch_counts_async(folder.path, out unseen, out total, cancellable);
+                remote_folder.properties.set_status_unseen(unseen);
+                remote_folder.properties.set_status_message_count(total, false);
+            } else {
+                unseen = remote_folder.properties.unseen;
+                total = remote_folder.properties.email_total;
+            }
+            
+            yield local.update_folder_status_async(remote_folder, false, true, cancellable);
+        } finally {
+            // added when call scheduled (above)
+            in_refresh_unseen.remove(folder);
         }
-        
-        in_refresh_unseen.remove(folder);
     }
     
     private void reschedule_folder_refresh(bool immediate) {
@@ -516,13 +528,41 @@ private abstract class Geary.ImapEngine.GenericAccount : Geary.AbstractAccount {
                 continue;
             
             Imap.Folder remote_folder = (Imap.Folder) yield remote.fetch_folder_async(folder,
-                null, cancellable);
+                null, null, cancellable);
             
             yield local.clone_folder_async(remote_folder, cancellable);
         }
         
         // Fetch the local account's version of the folder for the MinimalFolder
         return build_folder((ImapDB.Folder) yield local.fetch_folder_async(path, cancellable));
+    }
+    
+    /**
+     * Returns an Imap.Folder that is not connected (is detached) to a MinimalFolder or any other
+     * ImapEngine container.
+     *
+     * This is useful for one-shot operations that need to bypass the heavyweight synchronization
+     * routines inside MinimalFolder.  This also means that operations performed on this Folder will
+     * not be reflected in the local database unless there's a separate connection to the server
+     * that is notified or detects these changes.
+     *
+     * The returned Folder must be opened prior to use and closed once completed.  ''Leaving a
+     * Folder open will cause a connection leak.''
+     *
+     * It is not recommended this object be held open long-term, or that its status or notifications
+     * be directly written to the database unless you know exactly what you're doing.  ''Caveat
+     * implementor.''
+     */
+    public async Imap.Folder fetch_detached_folder_async(Geary.FolderPath path, Cancellable? cancellable)
+        throws Error {
+        check_open();
+        
+        if (local_only.has_key(path)) {
+            throw new EngineError.NOT_FOUND("%s: path %s points to local-only folder, not IMAP",
+                to_string(), path.to_string());
+        }
+        
+        return yield remote.fetch_unrecycled_folder_async(path, cancellable);
     }
     
     private Gee.HashMap<Geary.SpecialFolderType, Gee.ArrayList<string>> get_mailbox_search_names() {
@@ -678,7 +718,7 @@ private abstract class Geary.ImapEngine.GenericAccount : Geary.AbstractAccount {
             // always update, openable or not; have the folder update the UID info the next time
             // it's opened
             try {
-                yield local.update_folder_status_async(remote_folder, false, cancellable);
+                yield local.update_folder_status_async(remote_folder, false, false, cancellable);
             } catch (Error update_error) {
                 debug("Unable to update local folder %s with remote properties: %s",
                     remote_folder.to_string(), update_error.message);
@@ -824,6 +864,10 @@ private abstract class Geary.ImapEngine.GenericAccount : Geary.AbstractAccount {
         return yield local.fetch_email_async(check_id(email_id), required_fields, cancellable);
     }
     
+    public override Geary.SearchQuery open_search(string query, SearchQuery.Strategy strategy) {
+        return new ImapDB.SearchQuery(local, query, strategy);
+    }
+    
     public override async Gee.Collection<Geary.EmailIdentifier>? local_search_async(Geary.SearchQuery query,
         int limit = 100, int offset = 0, Gee.Collection<Geary.FolderPath?>? folder_blacklist = null,
         Gee.Collection<Geary.EmailIdentifier>? search_ids = null, Cancellable? cancellable = null) throws Error {
@@ -833,7 +877,7 @@ private abstract class Geary.ImapEngine.GenericAccount : Geary.AbstractAccount {
         return yield local.search_async(query, limit, offset, folder_blacklist, search_ids, cancellable);
     }
     
-    public override async Gee.Collection<string>? get_search_matches_async(Geary.SearchQuery query,
+    public override async Gee.Set<string>? get_search_matches_async(Geary.SearchQuery query,
         Gee.Collection<Geary.EmailIdentifier> ids, Cancellable? cancellable = null) throws Error {
         return yield local.get_search_matches_async(query, check_ids(ids), cancellable);
     }

@@ -1,4 +1,4 @@
-/* Copyright 2011-2014 Yorba Foundation
+/* Copyright 2011-2015 Yorba Foundation
  *
  * This software is licensed under the GNU Lesser General Public License
  * (version 2.1 or later).  See the COPYING file in this distribution.
@@ -120,7 +120,7 @@ public class IconFactory {
     public Gtk.IconInfo? lookup_icon(string icon_name, int size, Gtk.IconLookupFlags flags = 0) {
         Gtk.IconInfo? icon_info = icon_theme.lookup_icon(icon_name, size, flags);
         return icon_info != null ? icon_info.copy() :
-            icon_theme.lookup_icon("document-symbolic", size, flags);
+            icon_theme.lookup_icon("text-x-generic-symbolic", size, flags);
     }
     
     // GTK+ 3.14 no longer scales icons via the IconInfo, so perform manually until we

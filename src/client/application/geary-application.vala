@@ -1,4 +1,4 @@
-/* Copyright 2011-2014 Yorba Foundation
+/* Copyright 2011-2015 Yorba Foundation
  *
  * This software is licensed under the GNU Lesser General Public License
  * (version 2.1 or later).  See the COPYING file in this distribution.
@@ -16,7 +16,7 @@ public class GearyApplication : Gtk.Application {
     public const string PRGNAME = "geary";
     public const string APP_ID = "org.yorba.geary";
     public const string DESCRIPTION = _("Mail Client");
-    public const string COPYRIGHT = _("Copyright 2011-2014 Yorba Foundation");
+    public const string COPYRIGHT = _("Copyright 2011-2015 Yorba Foundation");
     public const string WEBSITE = "http://www.yorba.org";
     public const string WEBSITE_LABEL = _("Visit the Yorba web site");
     public const string BUGREPORT = "https://wiki.gnome.org/Apps/Geary/ReportingABug";
@@ -43,6 +43,9 @@ public class GearyApplication : Gtk.Application {
         {ACTION_ENTRY_COMPOSE, activate_compose, "s"},
     };
     
+    private const int64 USEC_PER_SEC = 1000000;
+    private const int64 FORCE_SHUTDOWN_USEC = 5 * USEC_PER_SEC;
+    
     public static GearyApplication instance {
         get { return _instance; }
         private set {
@@ -59,9 +62,6 @@ public class GearyApplication : Gtk.Application {
      * an exit, a callback should return true.
      */
     public virtual signal bool exiting(bool panicked) {
-        controller.close();
-        Date.terminate();
-        
         return true;
     }
     
@@ -80,18 +80,25 @@ public class GearyApplication : Gtk.Application {
     
     public Configuration config { get; private set; }
     
+    /**
+     * Indicates application is running under Ubuntu's Unity shell.
+     */
+    public bool is_running_unity { get; private set; }
+    
     private static GearyApplication _instance = null;
     
     private string bin;
     private File exec_dir;
-    
     private bool exiting_fired = false;
     private int exitcode = 0;
+    private bool is_destroyed = false;
     
     public GearyApplication() {
         Object(application_id: APP_ID);
         
         _instance = this;
+        
+        is_running_unity = Geary.String.stri_equal(Environment.get_variable("XDG_CURRENT_DESKTOP"), "Unity");
     }
     
     // Application.run() calls this as an entry point.
@@ -151,13 +158,25 @@ public class GearyApplication : Gtk.Application {
     }
     
     public bool present() {
-        if (controller == null || controller.main_window == null)
+        if (controller == null)
+            return false;
+        
+        // if LoginDialog (i.e. the opening dialog for creating the initial account) is present
+        // and visible, bring that to top (to prevent opening the hidden main window, which is
+        // empty)
+        if (controller.login_dialog != null && controller.login_dialog.visible) {
+            controller.login_dialog.present_with_time(Gdk.CURRENT_TIME);
+            
+            return true;
+        }
+        
+        if (controller.main_window == null)
             return false;
         
         if (!controller.main_window.get_realized())
             controller.main_window.show_all();
         else
-            controller.main_window.present();
+            controller.main_window.present_with_time(Gdk.CURRENT_TIME);
         
         return true;
     }
@@ -178,6 +197,17 @@ public class GearyApplication : Gtk.Application {
         yield controller.open_async();
         
         release();
+    }
+    
+    private async void destroy_async() {
+        // see create_async() for reasoning hold/release is used
+        hold();
+        
+        yield controller.close_async();
+        
+        release();
+        
+        is_destroyed = true;
     }
     
     public bool compose(string mailto) {
@@ -308,10 +338,28 @@ public class GearyApplication : Gtk.Application {
             return;
         }
         
+        // Give asynchronous destroy_async() a chance to complete, but to avoid bug(s) where
+        // Geary hangs at exit, shut the whole thing down if destroy_async() takes too long to
+        // complete
+        int64 start_usec = get_monotonic_time();
+        destroy_async.begin();
+        while (!is_destroyed || Gtk.events_pending()) {
+            Gtk.main_iteration();
+            
+            int64 delta_usec = get_monotonic_time() - start_usec;
+            if (delta_usec >= FORCE_SHUTDOWN_USEC) {
+                debug("Forcing shutdown of Geary, %ss passed...", (delta_usec / USEC_PER_SEC).to_string());
+                
+                break;
+            }
+        }
+        
         if (Gtk.main_level() > 0)
             Gtk.main_quit();
         else
             Posix.exit(exitcode);
+        
+        Date.terminate();
     }
     
     /**

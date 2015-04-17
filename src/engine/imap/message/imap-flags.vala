@@ -1,4 +1,4 @@
-/* Copyright 2011-2014 Yorba Foundation
+/* Copyright 2011-2015 Yorba Foundation
  *
  * This software is licensed under the GNU Lesser General Public License
  * (version 2.1 or later).  See the COPYING file in this distribution.
@@ -42,8 +42,14 @@ public abstract class Geary.Imap.Flags : Geary.MessageData.AbstractMessageData, 
      */
     public virtual Parameter to_parameter() {
         ListParameter listp = new ListParameter();
-        foreach (Flag flag in list)
-            listp.add(flag.to_parameter());
+        foreach (Flag flag in list) {
+            try {
+                listp.add(flag.to_parameter());
+            } catch (ImapError ierr) {
+                // drop on floor with warning
+                message("Unable to parameterize flag \"%s\": %s", flag.to_string(), ierr.message);
+            }
+        }
         
         return listp;
     }
@@ -71,7 +77,7 @@ public abstract class Geary.Imap.Flags : Geary.MessageData.AbstractMessageData, 
     }
     
     public uint hash() {
-        return to_string().down().hash();
+        return Ascii.stri_hash(to_string());
     }
 }
 

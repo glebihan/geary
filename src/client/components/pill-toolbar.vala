@@ -1,4 +1,4 @@
-/* Copyright 2011-2014 Yorba Foundation
+/* Copyright 2011-2015 Yorba Foundation
  *
  * This software is licensed under the GNU Lesser General Public License
  * (version 2.1 or later).  See the COPYING file in this distribution.
@@ -33,7 +33,7 @@ public interface PillBar : Gtk.Container {
         size.add_widget(widget);
     }
     
-    protected virtual void setup_button(Gtk.Button b, string? icon_name, string action_name,
+    public virtual void setup_button(Gtk.Button b, string? icon_name, string action_name,
         bool show_label = false) {
         b.related_action = action_group.get_action(action_name);
         b.tooltip_text = b.related_action.tooltip;
@@ -56,10 +56,9 @@ public interface PillBar : Gtk.Container {
         }
         
         // Unity buttons are a bit tight
-#if ENABLE_UNITY
-        if (b.image != null)
+        if (GearyApplication.instance.is_running_unity && b.image != null)
             b.image.margin = b.image.margin + 4;
-#endif
+        
         b.always_show_image = true;
         
         if (!show_label)
@@ -129,6 +128,23 @@ public class PillHeaderbar : Gtk.HeaderBar, PillBar {
     
     public PillHeaderbar(Gtk.ActionGroup toolbar_action_group) {
         initialize(toolbar_action_group);
+    }
+    
+    public bool close_button_at_end() {
+        string layout;
+        bool at_end = false;
+#if GTK_3_12
+        layout = decoration_layout;
+#else
+        get_toplevel().style_get("decoration-button-layout", out layout);
+#endif
+        // Based on logic of close_button_at_end in gtkheaderbar.c: Close button appears
+        // at end iff "close" follows a colon in the layout string.
+        if (layout != null) {
+            int colon_ind = layout.index_of(":");
+            at_end = (colon_ind >= 0 && layout.index_of("close", colon_ind) >= 0);
+        }
+        return at_end;
     }
 }
 

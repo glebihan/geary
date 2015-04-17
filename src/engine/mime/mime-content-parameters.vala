@@ -1,4 +1,4 @@
-/* Copyright 2013-2014 Yorba Foundation
+/* Copyright 2013-2015 Yorba Foundation
  *
  * This software is licensed under the GNU Lesser General Public License
  * (version 2.1 or later).  See the COPYING file in this distribution.
@@ -23,7 +23,7 @@ public class Geary.Mime.ContentParameters : BaseObject {
     
     // See get_parameters() for why the keys but not the values are stored case-insensitive
     private Gee.HashMap<string, string> params = new Gee.HashMap<string, string>(
-        String.stri_hash, String.stri_equal);
+        Ascii.stri_hash, Ascii.stri_equal);
     
     /**
      * Create a mapping of content parameters.
@@ -52,8 +52,8 @@ public class Geary.Mime.ContentParameters : BaseObject {
      * for some parameter values to be case-sensitive and so they are stored as such.  It is up
      * to the caller to use the right comparison method.
      *
-     * @see is_parameter_ci
-     * @see is_parameter_cs
+     * @see has_value_ci
+     * @see has_value_cs
      */
     public Gee.Map<string, string> get_parameters() {
         return params.read_only_view;
@@ -71,23 +71,23 @@ public class Geary.Mime.ContentParameters : BaseObject {
     /**
      * Returns true if the attribute has the supplied value (case-insensitive comparison).
      *
-     * @see has_value_ci
+     * @see has_value_cs
      */
     public bool has_value_ci(string attribute, string value) {
         string? stored = params.get(attribute);
         
-        return (stored != null) ? String.stri_equal(stored, value) : false;
+        return (stored != null) ? Ascii.stri_equal(stored, value) : false;
     }
     
     /**
      * Returns true if the attribute has the supplied value (case-sensitive comparison).
      *
-     * @see has_value_cs
+     * @see has_value_ci
      */
     public bool has_value_cs(string attribute, string value) {
         string? stored = params.get(attribute);
         
-        return (stored != null) ? (stored == value) : false;
+        return (stored != null) ? Ascii.str_equal(stored, value) : false;
     }
     
     /**

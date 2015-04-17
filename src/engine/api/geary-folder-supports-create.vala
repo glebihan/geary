@@ -1,4 +1,4 @@
-/* Copyright 2012-2014 Yorba Foundation
+/* Copyright 2012-2015 Yorba Foundation
  *
  * This software is licensed under the GNU Lesser General Public License
  * (version 2.1 or later).  See the COPYING file in this distribution.
@@ -13,6 +13,7 @@
  * Note that creating an email in the Outbox will queue it for sending.  Thus, it may be removed
  * without user interaction at some point in the future.
  */
+
 public interface Geary.FolderSupport.Create : Geary.Folder {
     /**
      *  Creates (appends) the message to this folder.
@@ -27,8 +28,10 @@ public interface Geary.FolderSupport.Create : Geary.Folder {
      * 
      * If an id is passed, this will replace the existing message by deleting it after the new
      * message is created.  The new message's ID is returned.
+     *
+     * @see FolderProperties.create_never_returns_id
      */
     public abstract async Geary.EmailIdentifier? create_email_async(Geary.RFC822.Message rfc822, EmailFlags? flags,
-        DateTime? date_received, Geary.EmailIdentifier? id = null, Cancellable? cancellable = null) throws Error;
+        DateTime? date_received, Geary.EmailIdentifier? id, Cancellable? cancellable = null) throws Error;
 }
 

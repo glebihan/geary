@@ -1,4 +1,4 @@
-/* Copyright 2012-2014 Yorba Foundation
+/* Copyright 2012-2015 Yorba Foundation
  *
  * This software is licensed under the GNU Lesser General Public License
  * (version 2.1 or later).  See the COPYING file in this distribution.
@@ -18,7 +18,8 @@ private class Geary.ImapEngine.FetchEmail : Geary.ImapEngine.SendReplayOperation
     
     public FetchEmail(MinimalFolder engine, ImapDB.EmailIdentifier id, Email.Field required_fields,
         Folder.ListFlags flags, Cancellable? cancellable) {
-        base ("FetchEmail");
+        // Unlike the list operations, fetch needs to retry remote
+        base ("FetchEmail", OnError.RETRY);
         
         this.engine = engine;
         this.id = id;
@@ -109,8 +110,8 @@ private class Geary.ImapEngine.FetchEmail : Geary.ImapEngine.SendReplayOperation
         if (created_or_merged.get(email)) {
             Gee.Collection<Geary.EmailIdentifier> ids
                 = Geary.iterate<Geary.EmailIdentifier>(email.id).to_array_list();
-            engine.notify_email_inserted(ids);
-            engine.notify_email_locally_inserted(ids);
+            engine.replay_notify_email_inserted(ids);
+            engine.replay_notify_email_locally_inserted(ids);
         }
         
         // if remote_email doesn't fulfill all required, pull from local database, which should now

@@ -1,4 +1,4 @@
-/* Copyright 2011-2014 Yorba Foundation
+/* Copyright 2011-2015 Yorba Foundation
  *
  * This software is licensed under the GNU Lesser General Public License
  * (version 2.1 or later).  See the COPYING file in this distribution.
@@ -30,6 +30,10 @@ public class GearyController : Geary.BaseObject {
     public const string ACTION_ARCHIVE_MESSAGE = "GearyArchiveMessage";
     public const string ACTION_TRASH_MESSAGE = "GearyTrashMessage";
     public const string ACTION_DELETE_MESSAGE = "GearyDeleteMessage";
+    public const string ACTION_EMPTY_MENU = "GearyEmptyMenu";
+    public const string ACTION_EMPTY_SPAM = "GearyEmptySpam";
+    public const string ACTION_EMPTY_TRASH = "GearyEmptyTrash";
+    public const string ACTION_UNDO = "GearyUndo";
     public const string ACTION_FIND_IN_CONVERSATION = "GearyFindInConversation";
     public const string ACTION_FIND_NEXT_IN_CONVERSATION = "GearyFindNextInConversation";
     public const string ACTION_FIND_PREVIOUS_IN_CONVERSATION = "GearyFindPreviousInConversation";
@@ -48,27 +52,28 @@ public class GearyController : Geary.BaseObject {
     public const string ACTION_MOVE_MENU = "GearyMoveMenuButton";
     public const string ACTION_GEAR_MENU = "GearyGearMenuButton";
     public const string ACTION_SEARCH = "GearySearch";
+    public const string ACTION_CONVERSATION_LIST = "GearyConversationList";
+    public const string ACTION_TOGGLE_SEARCH = "GearyToggleSearch";
     
     public const string PROP_CURRENT_CONVERSATION ="current-conversations";
     
     public const int MIN_CONVERSATION_COUNT = 50;
     
-    private const string DELETE_MESSAGE_LABEL = _("_Delete");
+    private const string DELETE_MESSAGE_LABEL = _("Delete conversation");
     private const string DELETE_MESSAGE_TOOLTIP_SINGLE = _("Delete conversation (Shift+Delete)");
     private const string DELETE_MESSAGE_TOOLTIP_MULTIPLE = _("Delete conversations (Shift+Delete)");
     private const string DELETE_MESSAGE_ICON_NAME = "edit-delete-symbolic";
     
     // This refers to the action ("move email to the trash"), not the Trash folder itself
-    private const string TRASH_MESSAGE_LABEL = _("_Trash");
-    private const string TRASH_MESSAGE_TOOLTIP_SINGLE = _("Move conversation to trash (Delete, Backspace)");
-    private const string TRASH_MESSAGE_TOOLTIP_MULTIPLE = _("Move conversations to trash (Delete, Backspace)");
+    private const string TRASH_MESSAGE_TOOLTIP_SINGLE = _("Move conversation to Trash (Delete, Backspace)");
+    private const string TRASH_MESSAGE_TOOLTIP_MULTIPLE = _("Move conversations to Trash (Delete, Backspace)");
     private const string TRASH_MESSAGE_ICON_NAME = "user-trash-symbolic";
     
     // This refers to the action ("archive an email"), not the Archive folder itself
     private const string ARCHIVE_MESSAGE_LABEL = _("_Archive");
     private const string ARCHIVE_MESSAGE_TOOLTIP_SINGLE = _("Archive conversation (A)");
     private const string ARCHIVE_MESSAGE_TOOLTIP_MULTIPLE = _("Archive conversations (A)");
-    private const string ARCHIVE_MESSAGE_ICON_NAME = "archive-symbolic";
+    private const string ARCHIVE_MESSAGE_ICON_NAME = "mail-archive-symbolic";
     
     private const string MARK_AS_SPAM_LABEL = _("Mark as S_pam");
     private const string MARK_AS_NOT_SPAM_LABEL = _("Mark as not S_pam");
@@ -81,7 +86,7 @@ public class GearyController : Geary.BaseObject {
     private const string MOVE_MESSAGE_TOOLTIP_MULTIPLE = _("Move conversations");
     
     private const int SELECT_FOLDER_TIMEOUT_USEC = 100 * 1000;
-    private const int SEARCH_TIMEOUT_MSEC = 100;
+    private const int SEARCH_TIMEOUT_MSEC = 250;
     
     private const string PROP_ATTEMPT_OPEN_ACCOUNT = "attempt-open-account";
     
@@ -91,7 +96,11 @@ public class GearyController : Geary.BaseObject {
     public Geary.App.ConversationMonitor? current_conversations { get; private set; default = null; }
     
     public AutostartManager? autostart_manager { get; private set; default = null; }
-
+    
+    public LoginDialog? login_dialog { get; private set; default = null; }
+    
+    public MenuModel app_menu { get; private set; }
+    
     private Geary.Account? current_account = null;
     private Gee.HashMap<Geary.Account, Geary.App.EmailStore> email_stores
         = new Gee.HashMap<Geary.Account, Geary.App.EmailStore>();
@@ -119,11 +128,11 @@ public class GearyController : Geary.BaseObject {
     private Geary.Account? account_to_select = null;
     private Geary.Folder? previous_non_search_folder = null;
     private uint search_timeout_id = 0;
-    private LoginDialog? login_dialog = null;
     private UpgradeDialog upgrade_dialog;
     private Gee.List<string> pending_mailtos = new Gee.ArrayList<string>();
     private Geary.Nonblocking.Mutex untrusted_host_prompt_mutex = new Geary.Nonblocking.Mutex();
     private Gee.HashSet<Geary.Endpoint> validating_endpoints = new Gee.HashSet<Geary.Endpoint>();
+    private Geary.Revokable? revokable = null;
     
     // List of windows we're waiting to close before Geary closes.
     private Gee.List<ComposerWidget> waiting_to_close = new Gee.ArrayList<ComposerWidget>();
@@ -206,7 +215,7 @@ public class GearyController : Geary.BaseObject {
         main_window.folder_list.move_conversation.connect(on_move_conversation);
         main_window.main_toolbar.copy_folder_menu.folder_selected.connect(on_copy_conversation);
         main_window.main_toolbar.move_folder_menu.folder_selected.connect(on_move_conversation);
-        main_window.main_toolbar.search_text_changed.connect(on_search_text_changed);
+        main_window.search_bar.search_text_changed.connect(on_search_text_changed);
         main_window.conversation_viewer.link_selected.connect(on_link_selected);
         main_window.conversation_viewer.reply_to_message.connect(on_reply_to_message);
         main_window.conversation_viewer.reply_all_message.connect(on_reply_all_message);
@@ -240,6 +249,9 @@ public class GearyController : Geary.BaseObject {
         // instantiate here to ensure that Config is initialized and ready
         autostart_manager = new AutostartManager();
         
+        // initialize revokable
+        save_revokable(null, null);
+        
         // Start Geary.
         try {
             yield Geary.Engine.instance.open_async(GearyApplication.instance.get_user_data_directory(), 
@@ -253,13 +265,103 @@ public class GearyController : Geary.BaseObject {
     }
     
     /**
-     * Stops the controller and shuts down Geary.
+     * At the moment, this is non-reversible, i.e. once closed a GearyController cannot be
+     * re-opened.
      */
-    public void close() {
+    public async void close_async() {
+        Geary.Engine.instance.account_available.disconnect(on_account_available);
+        Geary.Engine.instance.account_unavailable.disconnect(on_account_unavailable);
+        Geary.Engine.instance.untrusted_host.disconnect(on_untrusted_host);
+        
+        // Connect to various UI signals.
+        main_window.conversation_list_view.conversations_selected.disconnect(on_conversations_selected);
+        main_window.conversation_list_view.conversation_activated.disconnect(on_conversation_activated);
+        main_window.conversation_list_view.load_more.disconnect(on_load_more);
+        main_window.conversation_list_view.mark_conversations.disconnect(on_mark_conversations);
+        main_window.conversation_list_view.visible_conversations_changed.disconnect(on_visible_conversations_changed);
+        main_window.folder_list.folder_selected.disconnect(on_folder_selected);
+        main_window.folder_list.copy_conversation.disconnect(on_copy_conversation);
+        main_window.folder_list.move_conversation.disconnect(on_move_conversation);
+        main_window.main_toolbar.copy_folder_menu.folder_selected.disconnect(on_copy_conversation);
+        main_window.main_toolbar.move_folder_menu.folder_selected.disconnect(on_move_conversation);
+        main_window.search_bar.search_text_changed.disconnect(on_search_text_changed);
+        main_window.conversation_viewer.link_selected.disconnect(on_link_selected);
+        main_window.conversation_viewer.reply_to_message.disconnect(on_reply_to_message);
+        main_window.conversation_viewer.reply_all_message.disconnect(on_reply_all_message);
+        main_window.conversation_viewer.forward_message.disconnect(on_forward_message);
+        main_window.conversation_viewer.mark_messages.disconnect(on_conversation_viewer_mark_messages);
+        main_window.conversation_viewer.open_attachment.disconnect(on_open_attachment);
+        main_window.conversation_viewer.save_attachments.disconnect(on_save_attachments);
+        main_window.conversation_viewer.save_buffer_to_file.disconnect(on_save_buffer_to_file);
+        main_window.conversation_viewer.edit_draft.disconnect(on_edit_draft);
+        
+        // hide window while shutting down, as this can take a few seconds under certain conditions
+        main_window.hide();
+        
+        // drop the Revokable, which will commit it if necessary
+        save_revokable(null, null);
+        
+        // close the ConversationMonitor
+        try {
+            if (current_conversations != null) {
+                debug("Stopping conversation monitor for %s...", current_conversations.folder.to_string());
+                
+                bool closing = yield current_conversations.stop_monitoring_async(null);
+                
+                // If not an Inbox, wait for it to close so all pending operations are flushed
+                if (closing) {
+                    debug("Waiting for %s to close...", current_conversations.folder.to_string());
+                    yield current_conversations.folder.wait_for_close_async(null);
+                }
+                
+                debug("Stopped conversation monitor for %s", current_conversations.folder.to_string());
+            }
+        } catch (Error err) {
+            message("Error closing conversation monitor %s at shutdown: %s",
+                current_conversations.folder.to_string(), err.message);
+        } finally {
+            current_conversations = null;
+        }
+        
+        // close all Inboxes
+        foreach (Geary.Folder inbox in inboxes.values) {
+            try {
+                debug("Closing %s...", inbox.to_string());
+                
+                // close and wait for all pending operations to be flushed
+                yield inbox.close_async(null);
+                
+                debug("Waiting for %s to close completely...", inbox.to_string());
+                
+                yield inbox.wait_for_close_async(null);
+                
+                debug("Closed %s", inbox.to_string());
+            } catch (Error err) {
+                message("Error closing Inbox %s at shutdown: %s", inbox.to_string(), err.message);
+            }
+        }
+        
+        // close all Accounts
+        foreach (Geary.Account account in email_stores.keys) {
+            try {
+                debug("Closing account %s", account.to_string());
+                yield account.close_async(null);
+                debug("Closed account %s", account.to_string());
+            } catch (Error err) {
+                message("Error closing account %s at shutdown: %s", account.to_string(), err.message);
+            }
+        }
+        
         main_window.destroy();
-        main_window = null;
-        current_account = null;
-        account_selected(null);
+        
+        // Turn off the lights and lock the door behind you
+        try {
+            debug("Closing Engine...");
+            yield Geary.Engine.instance.close_async(null);
+            debug("Closed Engine");
+        } catch (Error err) {
+            message("Error closing Geary Engine instance: %s", err.message);
+        }
     }
     
     private void add_accelerator(string accelerator, string action) {
@@ -361,7 +463,7 @@ public class GearyController : Geary.BaseObject {
         add_accelerator("F", ACTION_FORWARD_MESSAGE);
         
         Gtk.ActionEntry find_in_conversation = { ACTION_FIND_IN_CONVERSATION, null, null, "<Ctrl>F",
-        null, on_find_in_conversation_action };
+            null, on_find_in_conversation_action };
         entries += find_in_conversation;
         add_accelerator("slash", ACTION_FIND_IN_CONVERSATION);
         
@@ -381,17 +483,35 @@ public class GearyController : Geary.BaseObject {
         // although this action changes according to the account's capabilities, set to Delete
         // until they're known so the "translatable" string doesn't first appear
         Gtk.ActionEntry trash_message = { ACTION_TRASH_MESSAGE, TRASH_MESSAGE_ICON_NAME,
-            TRASH_MESSAGE_LABEL, "Delete", null, on_trash_message };
+            null, "Delete", null, on_trash_message };
         trash_message.tooltip = TRASH_MESSAGE_TOOLTIP_SINGLE;
         entries += trash_message;
         add_accelerator("BackSpace", ACTION_TRASH_MESSAGE);
         
         Gtk.ActionEntry delete_message = { ACTION_DELETE_MESSAGE, DELETE_MESSAGE_ICON_NAME,
-            DELETE_MESSAGE_LABEL, "<Shift>Delete", null, on_delete_message };
+            null, "<Shift>Delete", null, on_delete_message };
+        delete_message.label = DELETE_MESSAGE_LABEL;
         delete_message.tooltip = DELETE_MESSAGE_TOOLTIP_SINGLE;
         entries += delete_message;
         add_accelerator("<Shift>BackSpace", ACTION_DELETE_MESSAGE);
-
+        
+        Gtk.ActionEntry empty_menu = { ACTION_EMPTY_MENU, "edit-clear-all-symbolic", null, null,
+            null, null };
+        empty_menu.label = _("Empty");
+        empty_menu.tooltip = _("Empty Spam or Trash folders");
+        entries += empty_menu;
+        
+        Gtk.ActionEntry empty_spam = { ACTION_EMPTY_SPAM, null, null, null, null, on_empty_spam };
+        empty_spam.label = _("Empty _Spam…");
+        entries += empty_spam;
+        
+        Gtk.ActionEntry empty_trash = { ACTION_EMPTY_TRASH, null, null, null, null, on_empty_trash };
+        empty_trash.label = _("Empty _Trash…");
+        entries += empty_trash;
+        
+        Gtk.ActionEntry undo = { ACTION_UNDO, "edit-undo-symbolic", null, "<Ctrl>Z", null, on_revoke };
+        entries += undo;
+        
         Gtk.ActionEntry zoom_in = { ACTION_ZOOM_IN, null, null, "<Ctrl>equal",
             null, on_zoom_in };
         entries += zoom_in;
@@ -412,6 +532,15 @@ public class GearyController : Geary.BaseObject {
         Gtk.ActionEntry search = { ACTION_SEARCH, null, null, null, null, on_search };
         entries += search;
         add_accelerator("<Ctrl>S", ACTION_SEARCH);
+        
+        Gtk.ActionEntry conversation_list = { ACTION_CONVERSATION_LIST, null, null, null, null, on_conversation_list };
+        entries += conversation_list;
+        add_accelerator("<Ctrl>B", ACTION_CONVERSATION_LIST);
+        
+        // No callback is connected, since we bind the toggle button to the search bar visibility
+        Gtk.ActionEntry toggle_search = { ACTION_TOGGLE_SEARCH, null, null, null,
+            _("Toggle search bar"), null };
+        entries += toggle_search;
         
         return entries;
     }
@@ -474,7 +603,7 @@ public class GearyController : Geary.BaseObject {
         } catch (Error e) {
             error("Unable to parse app_menu.interface: %s", e.message);
         }
-        MenuModel menu = (MenuModel) builder.get_object("app-menu");
+        app_menu = (MenuModel) builder.get_object("app-menu");
         
         // We'd *like* to always export an app menu and just let the shell
         // decide whether to display it or not.  Unfortunately Mint (Cinnamon,
@@ -482,7 +611,7 @@ public class GearyController : Geary.BaseObject {
         // application, even if you didn't have one otherwise, if you export
         // the app menu.  So, we only export it if the shell claims to show it.
         if (Gtk.Settings.get_default().gtk_shell_shows_app_menu)
-            GearyApplication.instance.set_app_menu(menu);
+            GearyApplication.instance.set_app_menu(app_menu);
     }
     
     private void open_account(Geary.Account account) {
@@ -1095,7 +1224,7 @@ public class GearyController : Geary.BaseObject {
         cancel_inbox(account);
         
         previous_non_search_folder = null;
-        main_window.main_toolbar.set_search_text(""); // Reset search.
+        main_window.search_bar.set_search_text(""); // Reset search.
         if (current_account == account) {
             cancel_folder();
             switch_to_first_inbox(); // Switch folder.
@@ -1105,8 +1234,6 @@ public class GearyController : Geary.BaseObject {
         account.sending_monitor.start.disconnect(on_sending_started);
         account.sending_monitor.finish.disconnect(on_sending_finished);
         
-        if (main_window.conversation_list_store.account_owner_email == account.information.email)
-            main_window.conversation_list_store.account_owner_email = null;
         main_window.folder_list.remove_account(account);
         
         if (inboxes.has_key(account)) {
@@ -1194,7 +1321,7 @@ public class GearyController : Geary.BaseObject {
     // by other utility methods
     private void update_ui() {
         update_tooltips();
-        main_window.main_toolbar.update_trash_buttons(
+        main_window.main_toolbar.update_trash_archive_buttons(
             current_folder_supports_trash() || !(current_folder is Geary.FolderSupport.Remove),
             current_account.can_support_archive);
     }
@@ -1206,7 +1333,7 @@ public class GearyController : Geary.BaseObject {
         if (folder == null) {
             current_folder = null;
             main_window.conversation_list_store.clear();
-            main_window.main_toolbar.subtitle = null;
+            main_window.main_toolbar.folder = null;
             folder_selected(null);
             
             return;
@@ -1250,7 +1377,7 @@ public class GearyController : Geary.BaseObject {
         
         debug("Switching to %s...", folder.to_string());
         
-        cancel_folder();
+        closed_folder();
         
         // This function is not reentrant.  It should be, because it can be
         // called reentrant-ly if you select folders quickly enough.  This
@@ -1263,13 +1390,13 @@ public class GearyController : Geary.BaseObject {
         Cancellable? conversation_cancellable = (current_is_inbox ?
             inbox_cancellables.get(folder.account) : cancellable_folder);
         
-        // stop monitoring for conversations and close the folder (but only if not an inbox,
-        // which we leave open for notifications)
+        // clear Revokable, as Undo is only available while a folder is selected
+        save_revokable(null, null);
+        
+        // stop monitoring for conversations and close the folder
         if (current_conversations != null) {
-            yield current_conversations.stop_monitoring_async(!current_is_inbox, null);
+            yield current_conversations.stop_monitoring_async(null);
             current_conversations = null;
-        } else if (current_folder != null && !current_is_inbox) {
-            yield current_folder.close_async();
         }
         
         // re-enable copy/move to the last selected folder
@@ -1297,9 +1424,6 @@ public class GearyController : Geary.BaseObject {
         
         if (!(current_folder is Geary.SearchFolder))
             previous_non_search_folder = current_folder;
-        
-        main_window.conversation_list_store.set_current_folder(current_folder, conversation_cancellable);
-        main_window.conversation_list_store.account_owner_email = current_account.information.email;
         
         main_window.main_toolbar.copy_folder_menu.clear();
         main_window.main_toolbar.move_folder_menu.clear();
@@ -1409,7 +1533,7 @@ public class GearyController : Geary.BaseObject {
             return;
         
         // TODO: Determine how to map between conversations and drafts correctly.
-        on_edit_draft(activated.get_latest_email(Geary.App.Conversation.Location.IN_FOLDER));
+        on_edit_draft(activated.get_latest_recv_email(Geary.App.Conversation.Location.IN_FOLDER));
     }
     
     private void on_edit_draft(Geary.Email draft) {
@@ -1516,6 +1640,12 @@ public class GearyController : Geary.BaseObject {
         old_cancellable.cancel();
     }
     
+    // Like cancel_folder() but doesn't cancel outstanding operations, allowing them to complete
+    // in the background
+    private void closed_folder() {
+        cancellable_folder = new Cancellable();
+    }
+    
     private void cancel_inbox(Geary.Account account) {
         if (!inbox_cancellables.has_key(account)) {
             debug("Unable to cancel inbox operation for %s", account.to_string());
@@ -1610,7 +1740,7 @@ public class GearyController : Geary.BaseObject {
     private void on_shift_key(bool pressed) {
         if (main_window != null && main_window.main_toolbar != null
             && current_account != null && current_folder != null) {
-            main_window.main_toolbar.update_trash_buttons(
+            main_window.main_toolbar.update_trash_archive_buttons(
                 (!pressed && current_folder_supports_trash()) || !(current_folder is Geary.FolderSupport.Remove),
                 current_account.can_support_archive);
         }
@@ -1634,11 +1764,13 @@ public class GearyController : Geary.BaseObject {
         dialog.run();
     }
     
+    // latest_sent_only uses Email's Date: field, which corresponds to how they're sorted in the
+    // ConversationViewer
     private Gee.ArrayList<Geary.EmailIdentifier> get_conversation_email_ids(
-        Geary.App.Conversation conversation, bool latest_only,
+        Geary.App.Conversation conversation, bool latest_sent_only,
         Gee.ArrayList<Geary.EmailIdentifier> add_to) {
-        if (latest_only) {
-            Geary.Email? latest = conversation.get_latest_email(
+        if (latest_sent_only) {
+            Geary.Email? latest = conversation.get_latest_sent_email(
                 Geary.App.Conversation.Location.IN_FOLDER_OUT_OF_FOLDER);
             if (latest != null)
                 add_to.add(latest.id);
@@ -1650,20 +1782,19 @@ public class GearyController : Geary.BaseObject {
     }
     
     private Gee.Collection<Geary.EmailIdentifier> get_conversation_collection_email_ids(
-        Gee.Collection<Geary.App.Conversation> conversations, bool latest_only = false) {
+        Gee.Collection<Geary.App.Conversation> conversations, bool latest_sent_only) {
         Gee.ArrayList<Geary.EmailIdentifier> ret = new Gee.ArrayList<Geary.EmailIdentifier>();
         
         foreach(Geary.App.Conversation c in conversations)
-            get_conversation_email_ids(c, latest_only, ret);
+            get_conversation_email_ids(c, latest_sent_only, ret);
         
         return ret;
     }
     
-    private Gee.ArrayList<Geary.EmailIdentifier> get_selected_email_ids(
-        bool latest_only) {
+    private Gee.ArrayList<Geary.EmailIdentifier> get_selected_email_ids(bool latest_sent_only) {
         Gee.ArrayList<Geary.EmailIdentifier> ids = new Gee.ArrayList<Geary.EmailIdentifier>();
         foreach (Geary.App.Conversation conversation in selected_conversations)
-            get_conversation_email_ids(conversation, latest_only, ids);
+            get_conversation_email_ids(conversation, latest_sent_only, ids);
         return ids;
     }
     
@@ -1686,7 +1817,9 @@ public class GearyController : Geary.BaseObject {
             
             // Only check the messages that "Mark as Unread" would mark, so we
             // don't add the menu option and have it not do anything.
-            Geary.Email? latest = conversation.get_latest_email(
+            //
+            // Sort by Date: field to correspond with ConversationViewer ordering
+            Geary.Email? latest = conversation.get_latest_sent_email(
                 Geary.App.Conversation.Location.IN_FOLDER_OUT_OF_FOLDER);
             if (latest != null && latest.email_flags != null
                 && !latest.email_flags.contains(Geary.EmailFlags.UNREAD))
@@ -1850,10 +1983,19 @@ public class GearyController : Geary.BaseObject {
             return;
         
         Geary.FolderSupport.Move? supports_move = current_folder as Geary.FolderSupport.Move;
-        if (supports_move == null)
-            return;
-        
-        supports_move.move_email_async.begin(ids, destination.path, cancellable_folder);
+        if (supports_move != null)
+            move_conversation_async.begin(supports_move, ids, destination.path, cancellable_folder);
+    }
+    
+    private async void move_conversation_async(Geary.FolderSupport.Move source_folder,
+        Gee.List<Geary.EmailIdentifier> ids, Geary.FolderPath destination, Cancellable? cancellable) {
+        try {
+            save_revokable(yield source_folder.move_email_async(ids, destination, cancellable),
+                _("Undo move (Ctrl+Z)"));
+        } catch (Error err) {
+            debug("%s: Unable to move %d emails: %s", source_folder.to_string(), ids.size,
+                err.message);
+        }
     }
     
     private void on_open_attachment(Geary.Attachment attachment) {
@@ -2065,6 +2207,19 @@ public class GearyController : Geary.BaseObject {
         return true;
     }
     
+    // message is the email from whose menu this reply or forward was triggered.  If null,
+    // this was triggered from the headerbar or shortcut.
+    private void create_reply_forward_widget(ComposerWidget.ComposeType compose_type,
+        Geary.Email? message) {
+        string? quote;
+        Geary.Email? quote_message = main_window.conversation_viewer.get_selected_message(out quote);
+        if (message == null)
+            message = quote_message;
+        if (quote_message != message)
+            quote = null;
+        create_compose_widget(compose_type, message, quote);
+    }
+    
     private void create_compose_widget(ComposerWidget.ComposeType compose_type,
         Geary.Email? referred = null, string? quote = null, string? mailto = null,
         bool is_draft = false) {
@@ -2078,7 +2233,7 @@ public class GearyController : Geary.BaseObject {
             return;
         
         bool inline;
-        if (!should_create_new_composer(compose_type, referred, quote, out inline))
+        if (!should_create_new_composer(compose_type, referred, quote, is_draft, out inline))
             return;
         
         ComposerWidget widget;
@@ -2097,36 +2252,46 @@ public class GearyController : Geary.BaseObject {
             }
             
             widget = new ComposerWidget(current_account, compose_type, full, quote, is_draft);
+            if (is_draft) {
+                yield widget.restore_draft_state_async(current_account);
+                main_window.conversation_viewer.blacklist_by_id(referred.id);
+            }
         }
         widget.show_all();
         
         // We want to keep track of the open composer windows, so we can allow the user to cancel
         // an exit without losing their data.
         composer_widgets.add(widget);
-        debug(@"Creating composer of type $compose_type; $(composer_widgets.size) composers total");
+        debug(@"Creating composer of type $(widget.compose_type); $(composer_widgets.size) composers total");
         widget.destroy.connect(on_composer_widget_destroy);
         
         if (inline) {
-            new ComposerEmbed(widget, main_window.conversation_viewer, referred);
+            if (widget.state == ComposerWidget.ComposerState.NEW ||
+                widget.state == ComposerWidget.ComposerState.PANED)
+                main_window.conversation_viewer.set_paned_composer(widget);
+            else
+                new ComposerEmbed(widget, main_window.conversation_viewer, referred); // is_draft
         } else {
-            widget.state = ComposerWidget.ComposerState.DETACHED;
             new ComposerWindow(widget);
+            widget.state = ComposerWidget.ComposerState.DETACHED;
         }
     }
     
     private bool should_create_new_composer(ComposerWidget.ComposeType? compose_type,
-        Geary.Email? referred, string? quote, out bool inline) {
+        Geary.Email? referred, string? quote, bool is_draft, out bool inline) {
         inline = true;
         
         // In we're replying, see whether we already have a reply for that message.
         if (compose_type != null && compose_type != ComposerWidget.ComposeType.NEW_MESSAGE) {
             foreach (ComposerWidget cw in composer_widgets) {
                 if (cw.state != ComposerWidget.ComposerState.DETACHED &&
-                    referred != null && referred.id.equal_to(cw.referred_id)) {
+                    ((referred != null && cw.referred_ids.contains(referred.id)) ||
+                     quote != null)) {
                     cw.change_compose_type(compose_type, referred, quote);
                     return false;
                 }
             }
+            inline = !any_inline_composers();
             return true;
         }
         
@@ -2134,11 +2299,17 @@ public class GearyController : Geary.BaseObject {
         if (!any_inline_composers())
             return true;
         
+        // If we're resuming a draft with open composers, open in a new window.
+        if (is_draft) {
+            inline = false;
+            return true;
+        }
+        
         // If we're creating a new message, and there's already a new message open, focus on
         // it if it hasn't been modified; otherwise open a new composer in a new window.
         if (compose_type == ComposerWidget.ComposeType.NEW_MESSAGE) {
             foreach (ComposerWidget cw in composer_widgets) {
-                if (cw.state == ComposerWidget.ComposerState.INLINE_NEW) {
+                if (cw.state == ComposerWidget.ComposerState.NEW) {
                     if (!cw.blank) {
                         inline = false;
                         return true;
@@ -2170,7 +2341,7 @@ public class GearyController : Geary.BaseObject {
     
     public bool can_switch_conversation_view() {
         bool inline;
-        return should_create_new_composer(null, null, null, out inline);
+        return should_create_new_composer(null, null, null, false, out inline);
     }
     
     public bool any_inline_composers() {
@@ -2197,36 +2368,27 @@ public class GearyController : Geary.BaseObject {
     }
     
     private void on_reply_to_message(Geary.Email message) {
-        create_compose_widget(ComposerWidget.ComposeType.REPLY, message);
+        create_reply_forward_widget(ComposerWidget.ComposeType.REPLY, message);
     }
     
     private void on_reply_to_message_action() {
-        string? quote;
-        Geary.Email? message = main_window.conversation_viewer.get_selected_message(out quote);
-        if (message != null)
-            create_compose_widget(ComposerWidget.ComposeType.REPLY, message, quote);
+        create_reply_forward_widget(ComposerWidget.ComposeType.REPLY, null);
     }
     
     private void on_reply_all_message(Geary.Email message) {
-        create_compose_widget(ComposerWidget.ComposeType.REPLY_ALL, message);
+        create_reply_forward_widget(ComposerWidget.ComposeType.REPLY_ALL, message);
     }
     
     private void on_reply_all_message_action() {
-        string? quote;
-        Geary.Email? message = main_window.conversation_viewer.get_selected_message(out quote);
-        if (message != null)
-            create_compose_widget(ComposerWidget.ComposeType.REPLY_ALL, message, quote);
+        create_reply_forward_widget(ComposerWidget.ComposeType.REPLY_ALL, null);
     }
     
     private void on_forward_message(Geary.Email message) {
-        create_compose_widget(ComposerWidget.ComposeType.FORWARD, message);
+        create_reply_forward_widget(ComposerWidget.ComposeType.FORWARD, message);
     }
     
     private void on_forward_message_action() {
-        string? quote;
-        Geary.Email? message = main_window.conversation_viewer.get_selected_message(out quote);
-        if (message != null)
-            create_compose_widget(ComposerWidget.ComposeType.FORWARD, message, quote);
+        create_reply_forward_widget(ComposerWidget.ComposeType.FORWARD, null);
     }
     
     private void on_find_in_conversation_action() {
@@ -2254,6 +2416,83 @@ public class GearyController : Geary.BaseObject {
     private void on_delete_message() {
         archive_or_delete_selection_async.begin(false, false, cancellable_folder,
             on_archive_or_delete_selection_finished);
+    }
+    
+    private void on_empty_spam() {
+        on_empty_trash_or_spam(Geary.SpecialFolderType.SPAM);
+    }
+    
+    private void on_empty_trash() {
+        on_empty_trash_or_spam(Geary.SpecialFolderType.TRASH);
+    }
+    
+    private void on_empty_trash_or_spam(Geary.SpecialFolderType special_folder_type) {
+        // Account must be in place, must have the specified special folder type, and that folder
+        // must support Empty in order for this command to proceed
+        if (current_account == null)
+            return;
+        
+        Geary.Folder? folder = null;
+        try {
+            folder = current_account.get_special_folder(special_folder_type);
+        } catch (Error err) {
+            debug("%s: Unable to get special folder %s: %s", current_account.to_string(),
+                special_folder_type.to_string(), err.message);
+            
+            // fall through
+        }
+        
+        if (folder == null)
+            return;
+        
+        Geary.FolderSupport.Empty? emptyable = folder as Geary.FolderSupport.Empty;
+        if (emptyable == null) {
+            debug("%s: Special folder %s (%s) does not support emptying", current_account.to_string(),
+                folder.path.to_string(), special_folder_type.to_string());
+            
+            return;
+        }
+        
+        ConfirmationDialog dialog = new ConfirmationDialog(main_window,
+            _("Empty all email from your %s folder?").printf(special_folder_type.get_display_name()),
+            _("This removes the email from Geary and your email server.")
+                + "  <b>" + _("This cannot be undone.") + "</b>",
+            _("Empty %s").printf(special_folder_type.get_display_name()));
+        dialog.use_secondary_markup(true);
+        dialog.set_focus_response(Gtk.ResponseType.CANCEL);
+        
+        if (dialog.run() == Gtk.ResponseType.OK)
+            empty_folder_async.begin(emptyable, cancellable_folder);
+    }
+    
+    private async void empty_folder_async(Geary.FolderSupport.Empty emptyable, Cancellable? cancellable) {
+        try {
+            yield do_empty_folder_async(emptyable, cancellable);
+        } catch (Error err) {
+            // don't report to user if cancelled
+            if (cancellable is IOError.CANCELLED)
+                return;
+            
+            ErrorDialog dialog = new ErrorDialog(main_window,
+                _("Error emptying %s").printf(emptyable.get_display_name()), err.message);
+            dialog.run();
+        }
+    }
+    
+    private async void do_empty_folder_async(Geary.FolderSupport.Empty emptyable, Cancellable? cancellable)
+        throws Error {
+        yield emptyable.open_async(Geary.Folder.OpenFlags.NONE, cancellable);
+        
+        // be sure to close in all code paths
+        try {
+            yield emptyable.empty_folder_async(cancellable);
+        } finally {
+            try {
+                yield emptyable.close_async(null);
+            } catch (Error err) {
+                // ignored
+            }
+        }
     }
     
     private bool current_folder_supports_trash() {
@@ -2294,10 +2533,13 @@ public class GearyController : Geary.BaseObject {
             debug("Archiving selected messages");
             
             Geary.FolderSupport.Archive? supports_archive = current_folder as Geary.FolderSupport.Archive;
-            if (supports_archive == null)
+            if (supports_archive == null) {
                 debug("Folder %s doesn't support archive", current_folder.to_string());
-            else
-                yield supports_archive.archive_email_async(ids, cancellable);
+            } else {
+                save_revokable(yield supports_archive.archive_email_async(ids, cancellable),
+                    _("Undo archive (Ctrl+Z)"));
+            }
+            
             return;
         }
         
@@ -2309,7 +2551,9 @@ public class GearyController : Geary.BaseObject {
                     Geary.SpecialFolderType.TRASH, cancellable)).path;
                 Geary.FolderSupport.Move? supports_move = current_folder as Geary.FolderSupport.Move;
                 if (supports_move != null) {
-                    yield supports_move.move_email_async(ids, trash_path, cancellable);
+                    save_revokable(yield supports_move.move_email_async(ids, trash_path, cancellable),
+                        _("Undo trash (Ctrl+Z)"));
+                    
                     return;
                 }
             }
@@ -2340,6 +2584,71 @@ public class GearyController : Geary.BaseObject {
         }
     }
     
+    private void save_revokable(Geary.Revokable? new_revokable, string? description) {
+        // disconnect old revokable & blindly commit it
+        if (revokable != null) {
+            revokable.notify[Geary.Revokable.PROP_VALID].disconnect(on_revokable_valid_changed);
+            revokable.notify[Geary.Revokable.PROP_IN_PROCESS].disconnect(update_revokable_action);
+            revokable.committed.disconnect(on_revokable_committed);
+            
+            revokable.commit_async.begin();
+        }
+        
+        // store new revokable
+        revokable = new_revokable;
+        
+        // connect to new revokable
+        if (revokable != null) {
+            revokable.notify[Geary.Revokable.PROP_VALID].connect(on_revokable_valid_changed);
+            revokable.notify[Geary.Revokable.PROP_IN_PROCESS].connect(update_revokable_action);
+            revokable.committed.connect(on_revokable_committed);
+        }
+        
+        Gtk.Action undo_action = GearyApplication.instance.get_action(ACTION_UNDO);
+        undo_action.tooltip = (revokable != null && description != null) ? description : _("Undo (Ctrl+Z)");
+        
+        update_revokable_action();
+    }
+    
+    private void update_revokable_action() {
+        Gtk.Action undo_action = GearyApplication.instance.get_action(ACTION_UNDO);
+        undo_action.sensitive = revokable != null && revokable.valid && !revokable.in_process;
+    }
+    
+    private void on_revokable_valid_changed() {
+        // remove revokable if it goes invalid
+        if (revokable != null && !revokable.valid)
+            save_revokable(null, null);
+    }
+    
+    private void on_revokable_committed(Geary.Revokable? committed_revokable) {
+        if (committed_revokable == null)
+            return;
+        
+        // use existing description
+        Gtk.Action undo_action = GearyApplication.instance.get_action(ACTION_UNDO);
+        save_revokable(committed_revokable, undo_action.tooltip);
+    }
+    
+    private void on_revoke() {
+        if (revokable != null && revokable.valid)
+            revokable.revoke_async.begin(null, on_revoke_completed);
+    }
+    
+    private void on_revoke_completed(Object? object, AsyncResult result) {
+        // Don't use the "revokable" instance because it might have gone null before this callback
+        // was reached
+        Geary.Revokable? origin = object as Geary.Revokable;
+        if (origin == null)
+            return;
+        
+        try {
+            origin.revoke_async.end(result);
+        } catch (Error err) {
+            debug("Unable to revoke operation: %s", err.message);
+        }
+    }
+    
     private void on_zoom_in() {
         main_window.conversation_viewer.web_view.zoom_in();
     }
@@ -2353,7 +2662,11 @@ public class GearyController : Geary.BaseObject {
     }
     
     private void on_search() {
-        main_window.main_toolbar.give_search_focus();
+        main_window.search_bar.give_search_focus();
+    }
+    
+    private void on_conversation_list() {
+        main_window.conversation_list_view.grab_focus();
     }
     
     private void on_sent(Geary.RFC822.Message rfc822) {
@@ -2511,10 +2824,11 @@ public class GearyController : Geary.BaseObject {
         
         cancel_search(); // Stop any search in progress.
         
-        folder.set_search_query(search_text, cancellable_search);
+        folder.search(search_text, GearyApplication.instance.config.get_search_strategy(),
+            cancellable_search);
         
         main_window.folder_list.set_search(folder);
-        search_text_changed(main_window.main_toolbar.search_text);
+        search_text_changed(main_window.search_bar.search_text);
     }
     
     private void on_search_text_changed(string search_text) {
@@ -2522,13 +2836,14 @@ public class GearyController : Geary.BaseObject {
         // search after a quick delay when they finish typing.
         if (search_timeout_id != 0)
             Source.remove(search_timeout_id);
-        search_timeout_id = Timeout.add(SEARCH_TIMEOUT_MSEC, on_search_timeout);
+        
+        search_timeout_id = Timeout.add(SEARCH_TIMEOUT_MSEC, on_search_timeout, Priority.LOW);
     }
     
     private bool on_search_timeout() {
         search_timeout_id = 0;
         
-        do_search(main_window.main_toolbar.search_text);
+        do_search(main_window.search_bar.search_text);
         
         return false;
     }

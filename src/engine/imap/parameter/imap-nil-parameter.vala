@@ -1,4 +1,4 @@
-/* Copyright 2011-2014 Yorba Foundation
+/* Copyright 2011-2015 Yorba Foundation
  *
  * This software is licensed under the GNU Lesser General Public License
  * (version 2.1 or later).  See the COPYING file in this distribution.
@@ -41,7 +41,7 @@ public class Geary.Imap.NilParameter : Geary.Imap.Parameter {
      * list.
      */
     public static bool is_nil(StringParameter stringp) {
-        return String.ascii_equali(VALUE, stringp.value);
+        return stringp.equals_ci(VALUE);
     }
     
     /**

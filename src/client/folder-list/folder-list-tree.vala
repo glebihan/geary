@@ -1,4 +1,4 @@
-/* Copyright 2011-2014 Yorba Foundation
+/* Copyright 2011-2015 Yorba Foundation
  *
  * This software is licensed under the GNU Lesser General Public License
  * (version 2.1 or later).  See the COPYING file in this distribution.
@@ -35,6 +35,22 @@ public class FolderList.Tree : Sidebar.Tree {
         unowned Gtk.BindingSet? binding_set = Gtk.BindingSet.find("GtkTreeView");
         assert(binding_set != null);
         Gtk.BindingEntry.remove(binding_set, Gdk.Key.N, Gdk.ModifierType.CONTROL_MASK);
+        // add j/k bindings for gmail or vim users
+        // The add_signal API is hard to use (need to pass variable arguments with
+        // type identifiers), so we might as well use this version that parses a
+        // string.
+        Gtk.BindingEntry.add_signal_from_string(
+            binding_set,
+            """
+                bind "j" { "move-cursor" (display-lines,  1) }
+            """
+        );
+        Gtk.BindingEntry.add_signal_from_string(
+            binding_set,
+            """
+                bind "k" { "move-cursor" (display-lines, -1) }
+            """
+        );
     }
     
     ~Tree() {

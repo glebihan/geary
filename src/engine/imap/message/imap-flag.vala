@@ -1,4 +1,4 @@
-/* Copyright 2011-2014 Yorba Foundation
+/* Copyright 2011-2015 Yorba Foundation
  *
  * This software is licensed under the GNU Lesser General Public License
  * (version 2.1 or later).  See the COPYING file in this distribution.
@@ -25,7 +25,7 @@ public abstract class Geary.Imap.Flag : BaseObject, Gee.Hashable<Geary.Imap.Flag
     }
     
     public bool equals_string(string value) {
-        return this.value.down() == value.down();
+        return Ascii.stri_equal(this.value, value);
     }
     
     public bool equal_to(Geary.Imap.Flag flag) {
@@ -35,12 +35,12 @@ public abstract class Geary.Imap.Flag : BaseObject, Gee.Hashable<Geary.Imap.Flag
     /**
      * Returns the {@link Flag} as an appropriate {@link Parameter}.
      */
-    public Parameter to_parameter() {
+    public StringParameter to_parameter() throws ImapError {
         return StringParameter.get_best_for(value);
     }
     
     public uint hash() {
-        return str_hash(value.down());
+        return Ascii.stri_hash(value);
     }
     
     public string to_string() {

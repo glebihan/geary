@@ -1,7 +1,14 @@
-/* Copyright 2011-2014 Yorba Foundation
+/* Copyright 2011-2015 Yorba Foundation
  *
  * This software is licensed under the GNU Lesser General Public License
  * (version 2.1 or later).  See the COPYING file in this distribution.
+ */
+
+/**
+ * A WebKit view displaying all the emails in a {@link Geary.App.Conversation}.
+ *
+ * Unlike ConversationListStore (which sorts by date received), ConversationViewer sorts by the
+ * {@link Geary.Email.date} field (the Date: header), as that's the date displayed to the user.
  */
 
 public class ConversationViewer : Gtk.Box {
@@ -82,6 +89,20 @@ public class ConversationViewer : Gtk.Box {
         }
     }
     
+    // Internal class to associate inline image buffers (replaced by rotated scaled versions of
+    // them) so they can be saved intact if the user requires it
+    private class ReplacedImage : Geary.BaseObject {
+        public string id;
+        public string filename;
+        public Geary.Memory.Buffer buffer;
+        
+        public ReplacedImage(int replaced_number, string filename, Geary.Memory.Buffer buffer) {
+            id = "%X".printf(replaced_number);
+            this.filename = filename;
+            this.buffer = buffer;
+        }
+    }
+    
     // Fired when the user clicks a link.
     public signal void link_selected(string link);
     
@@ -110,9 +131,12 @@ public class ConversationViewer : Gtk.Box {
     // Fired when the user clicks the edit draft button.
     public signal void edit_draft(Geary.Email message);
     
+    // Fired when the viewer has been cleared.
+    public signal void cleared();
+    
     // List of emails in this view.
     public Gee.TreeSet<Geary.Email> messages { get; private set; default = 
-        new Gee.TreeSet<Geary.Email>(Geary.Email.compare_date_ascending); }
+        new Gee.TreeSet<Geary.Email>(Geary.Email.compare_sent_date_ascending); }
     
     // The HTML viewer to view the emails.
     public ConversationWebView web_view { get; private set; }
@@ -128,6 +152,9 @@ public class ConversationViewer : Gtk.Box {
     
     // Overlay containing any inline composers.
     public ScrollableOverlay compose_overlay;
+    
+    // Paned for holding any paned composers.
+    private Gtk.Box composer_boxes;
     
     // Maps emails to their corresponding elements.
     private Gee.HashMap<Geary.EmailIdentifier, WebKit.DOM.HTMLElement> email_to_element = new
@@ -152,6 +179,10 @@ public class ConversationViewer : Gtk.Box {
     private DisplayMode display_mode = DisplayMode.NONE;
     private uint select_conversation_timeout_id = 0;
     private Gee.HashSet<string> inlined_content_ids = new Gee.HashSet<string>();
+    private int next_replaced_buffer_number = 0;
+    private Gee.HashMap<string, ReplacedImage> replaced_images = new Gee.HashMap<string, ReplacedImage>();
+    private Gee.HashSet<string> replaced_content_ids = new Gee.HashSet<string>();
+    private Gee.HashSet<string> blacklist_ids = new Gee.HashSet<string>();
     
     public ConversationViewer() {
         Object(orientation: Gtk.Orientation.VERTICAL, spacing: 0);
@@ -198,13 +229,33 @@ public class ConversationViewer : Gtk.Box {
         
         message_overlay = new Gtk.Overlay();
         message_overlay.add(conversation_viewer_scrolled);
-        pack_start(message_overlay);
+        
+        Gtk.Paned composer_paned = new Gtk.Paned(Gtk.Orientation.VERTICAL);
+        composer_paned.pack1(message_overlay, true, false);
+        composer_boxes = new Gtk.Box(Gtk.Orientation.VERTICAL, 0);
+        composer_boxes.no_show_all = true;
+        composer_paned.pack2(composer_boxes, true, false);
+        Configuration config = GearyApplication.instance.config;
+        config.bind(Configuration.COMPOSER_PANE_POSITION_KEY, composer_paned, "position");
+        pack_start(composer_paned);
+        composer_boxes.notify["visible"].connect(() => {
+            if (!composer_boxes.visible && !message_overlay.visible)
+                message_overlay.show();
+            });
         
         conversation_find_bar = new ConversationFindBar(web_view);
         conversation_find_bar.no_show_all = true;
         conversation_find_bar.close.connect(() => { fsm.issue(SearchEvent.CLOSE_FIND_BAR); });
         
         pack_start(conversation_find_bar, false);
+    }
+    
+    public void set_paned_composer(ComposerWidget composer) {
+        ComposerBox container = new ComposerBox(composer);
+        composer_boxes.pack_start(container);
+        composer_boxes.show();
+        if (composer.state == ComposerWidget.ComposerState.NEW)
+            message_overlay.hide();
     }
     
     public Geary.Email? get_last_message() {
@@ -282,13 +333,56 @@ public class ConversationViewer : Gtk.Box {
         email_to_element.clear();
         messages.clear();
         inlined_content_ids.clear();
+        replaced_images.clear();
+        replaced_content_ids.clear();
+        blacklist_ids.clear();
+        blacklist_css();
         
         current_account_information = account_information;
+        cleared();
     }
     
     // Converts an email ID into HTML ID used by the <div> for the email.
     public string get_div_id(Geary.EmailIdentifier id) {
         return "message_%s".printf(id.to_string());
+    }
+    
+    public void blacklist_by_id(Geary.EmailIdentifier? id) {
+        if (id == null)
+            return;
+        blacklist_ids.add(get_div_id(id));
+        blacklist_css();
+    }
+    
+    public void unblacklist_by_id(Geary.EmailIdentifier? id) {
+        if (id == null)
+            return;
+        blacklist_ids.remove(get_div_id(id));
+        blacklist_css();
+    }
+    
+    private void blacklist_css() {
+        GLib.StringBuilder rule = new GLib.StringBuilder();
+        bool first = true;
+        foreach (string id in blacklist_ids) {
+            if (!first)
+                rule.append(", ");
+            else
+                first = false;
+            rule.append("div[id=\"" + id + "\"]");
+        }
+        if (!first)
+            rule.append(" { display: none; }");
+        
+        WebKit.DOM.HTMLElement? style_element = web_view.get_dom_document()
+            .get_element_by_id("blacklist_ids") as WebKit.DOM.HTMLElement;
+        if (style_element != null) {
+            try {
+                style_element.set_inner_html(rule.str);
+            } catch (Error error) {
+                debug("Error setting blaklist CSS: %s", error.message);
+            }
+        }
     }
     
     private void show_special_message(string msg) {
@@ -412,7 +506,7 @@ public class ConversationViewer : Gtk.Box {
         // Fetch full messages.
         Gee.Collection<Geary.Email>? messages_to_add
             = yield list_full_messages_async(conversation.get_emails(
-            Geary.App.Conversation.Ordering.DATE_ASCENDING), cancellable);
+            Geary.App.Conversation.Ordering.SENT_DATE_ASCENDING), cancellable);
         
         // Add messages.
         if (messages_to_add != null) {
@@ -438,9 +532,26 @@ public class ConversationViewer : Gtk.Box {
         }
     }
     
-    private void on_search_text_changed(string? query) {
+    private void on_search_text_changed(Geary.SearchQuery? query) {
         if (query != null)
             highlight_search_terms.begin();
+    }
+    
+    // This applies a fudge-factor set of matches when the database results
+    // aren't entirely satisfactory, such as when you search for an email
+    // address and the database tokenizes out the @ and ., etc.  It's not meant
+    // to be comprehensive, just a little extra highlighting applied to make
+    // the results look a little closer to what you typed.
+    private void add_literal_matches(string raw_query, Gee.Set<string>? search_matches) {
+        foreach (string word in raw_query.split(" ")) {
+            if (word.has_suffix("\""))
+                word = word.substring(0, word.length - 1);
+            if (word.has_prefix("\""))
+                word = word.substring(1);
+            
+            if (!Geary.String.is_empty_or_whitespace(word))
+                search_matches.add(word);
+        }
     }
     
     private async void highlight_search_terms() {
@@ -456,8 +567,13 @@ public class ConversationViewer : Gtk.Box {
             ids.add(email.id);
         
         try {
-            Gee.Collection<string>? search_matches = yield search_folder.get_search_matches_async(
+            Gee.Set<string>? search_matches = yield search_folder.get_search_matches_async(
                 ids, cancellable_fetch);
+            if (search_matches == null)
+                search_matches = new Gee.HashSet<string>();
+            
+            if (search_folder.search_query != null)
+                add_literal_matches(search_folder.search_query.raw, search_matches);
             
             // Webkit's highlighting is ... weird.  In order to actually see
             // all the highlighting you're applying, it seems necessary to
@@ -465,8 +581,7 @@ public class ConversationViewer : Gtk.Box {
             // seems that shorter strings will overwrite longer ones, and
             // you're left with incomplete highlighting.
             Gee.ArrayList<string> ordered_matches = new Gee.ArrayList<string>();
-            if (search_matches != null)
-                ordered_matches.add_all(search_matches);
+            ordered_matches.add_all(search_matches);
             ordered_matches.sort((a, b) => a.length - b.length);
             
             foreach(string match in ordered_matches)
@@ -647,7 +762,7 @@ public class ConversationViewer : Gtk.Box {
         bind_event(web_view, ".email .compressed_note", "click", (Callback) on_body_toggle_clicked, this);
         bind_event(web_view, ".attachment_container .attachment", "click", (Callback) on_attachment_clicked, this);
         bind_event(web_view, ".attachment_container .attachment", "contextmenu", (Callback) on_attachment_menu, this);
-        bind_event(web_view, "." + DATA_IMAGE_CLASS, "contextmenu", (Callback) on_data_image_menu, this);
+        bind_event(web_view, "." + DATA_IMAGE_CLASS, "contextmenu", (Callback) on_data_image_menu_handler, this);
         bind_event(web_view, ".remote_images .show_images", "click", (Callback) on_show_images, this);
         bind_event(web_view, ".remote_images .show_from", "click", (Callback) on_show_images_from, this);
         bind_event(web_view, ".remote_images .close_show_images", "click", (Callback) on_close_show_images, this);
@@ -733,11 +848,31 @@ public class ConversationViewer : Gtk.Box {
         } catch (Error error) {
             debug("Failed to add preview text: %s", error.message);
         }
-
+        
+        //
+        // Build an HTML document from the email with two passes:
+        //
+        // * Geary.RFC822.Message.get_body() recursively walks the message's MIME structure looking
+        //   for text MIME parts and assembles them sequentially.  If non-text MIME parts are
+        //   discovered within a multipart/mixed container, it calls inline_image_replacer(), which
+        //   converts them to an IMG tag with a data: URI if they are a supported image type.
+        //   Otherwise, the MIME part is dropped.
+        //
+        // * insert_html_markup() then strips everything outside the BODY, turning the BODY tag
+        //   itself into a DIV, and performs other massaging of the HTML.  It also looks for IMG
+        //   tags that refer to other MIME parts via their Content-ID, converts them to data: URIs,
+        //   and inserts them into the document.
+        //
+        // Attachments are generated and added in add_message(), which calls this method before
+        // building the HTML for them.  The above two steps take steps to avoid inlining images
+        // that are actually attachments (in particular, get_body() considers their
+        // Content-Disposition)
+        //
+        
         string body_text = "";
         remote_images = false;
         try {
-            body_text = message.get_body(true, inline_image_replacer) ?? "";
+            body_text = message.get_body(Geary.RFC822.TextFormat.HTML, inline_image_replacer) ?? "";
             body_text = insert_html_markup(body_text, message, out remote_images);
         } catch (Error err) {
             debug("Could not get message text. %s", err.message);
@@ -800,9 +935,20 @@ public class ConversationViewer : Gtk.Box {
         return false;
     }
     
-    private static string? inline_image_replacer(string filename, Geary.Mime.ContentType? content_type,
+    // This delegate is called from within Geary.RFC822.Message.get_body while assembling the plain
+    // or HTML document when a non-text MIME part is encountered within a multipart/mixed container.
+    // If this returns null, the MIME part is dropped from the final returned document; otherwise,
+    // this returns HTML that is placed into the document in the position where the MIME part was
+    // found
+    private string? inline_image_replacer(string filename, Geary.Mime.ContentType? content_type,
         Geary.Mime.ContentDisposition? disposition, string? content_id, Geary.Memory.Buffer buffer) {
-        if (content_type == null || !is_content_type_supported_inline(content_type)) {
+        if (content_type == null) {
+            debug("Not displaying inline: no Content-Type");
+            
+            return null;
+        }
+        
+        if (!is_content_type_supported_inline(content_type)) {
             debug("Not displaying %s inline: unsupported Content-Type", content_type.to_string());
             
             return null;
@@ -814,6 +960,7 @@ public class ConversationViewer : Gtk.Box {
         // have the doucment set up to reduce the size of the image to fit in the viewport, and a
         // scaled load-and-deode is always faster than load followed by scale.
         Geary.Memory.Buffer rotated_image = buffer;
+        string mime_type = content_type.get_mime_type();
         try {
             Gdk.PixbufLoader loader = new Gdk.PixbufLoader();
             loader.size_prepared.connect(on_inline_image_size_prepared);
@@ -838,16 +985,33 @@ public class ConversationViewer : Gtk.Box {
                 // Save length before transferring ownership (which frees the array)
                 int image_length = image_data.length;
                 rotated_image = new Geary.Memory.ByteBuffer.take((owned) image_data, image_length);
+                mime_type = "image/png";
             }
         } catch (Error err) {
             debug("Unable to load and rotate image %s for display: %s", filename, err.message);
         }
         
-        string? escaped_content_id = (content_id != null) ? Geary.HTML.escape_markup(content_id) : null;
+        // store so later processing of the message doesn't replace this element with the original
+        // MIME part
+        string? escaped_content_id = null;
+        if (!Geary.String.is_empty(content_id)) {
+            replaced_content_ids.add(content_id);
+            escaped_content_id = Geary.HTML.escape_markup(content_id);
+        }
         
-        return "<img alt=\"%s\" class=\"%s %s\" src=\"%s\" %s />".printf(
-            filename, DATA_IMAGE_CLASS, REPLACED_IMAGE_CLASS,
-            assemble_data_uri(content_type.get_mime_type(), rotated_image),
+        // Store the original buffer and its filename in a local map so they can be recalled later
+        // (if the user wants to save it) ... note that Content-ID is optional and there's no
+        // guarantee that filename will be unique, even in the same message, so need to generate
+        // a unique identifier for each object
+        ReplacedImage replaced_image = new ReplacedImage(next_replaced_buffer_number++, filename,
+            buffer);
+        replaced_images.set(replaced_image.id, replaced_image);
+        
+        return "<img alt=\"%s\" class=\"%s %s\" src=\"%s\" replaced-id=\"%s\" %s />".printf(
+            Geary.HTML.escape_markup(filename),
+            DATA_IMAGE_CLASS, REPLACED_IMAGE_CLASS,
+            assemble_data_uri(mime_type, rotated_image),
+            Geary.HTML.escape_markup(replaced_image.id),
             escaped_content_id != null ? @"cid=\"$escaped_content_id\"" : "");
     }
     
@@ -1530,18 +1694,36 @@ public class ConversationViewer : Gtk.Box {
             conversation_viewer.show_attachment_menu(email, attachment);
     }
     
-    private static void on_data_image_menu(WebKit.DOM.Element element, WebKit.DOM.Event event,
+    private static void on_data_image_menu_handler(WebKit.DOM.Element element, WebKit.DOM.Event event,
         ConversationViewer conversation_viewer) {
+        conversation_viewer.on_data_image_menu(element, event);
+    }
+    
+    private void on_data_image_menu(WebKit.DOM.Element element, WebKit.DOM.Event event) {
         event.stop_propagation();
         
-        Geary.Memory.Buffer? buffer;
-        if (!dissasemble_data_uri(element.get_attribute("src"), out buffer))
+        string? replaced_id = element.get_attribute("replaced-id");
+        if (Geary.String.is_empty(replaced_id))
             return;
         
-        string? filename = element.get_attribute("alt");
+        ReplacedImage? replaced_image = replaced_images.get(replaced_id);
+        if (replaced_image == null)
+            return;
         
-        if (buffer != null && buffer.size > 0)
-            conversation_viewer.show_replaced_image_menu(filename, buffer);
+        image_menu = new Gtk.Menu();
+        image_menu.selection_done.connect(() => {
+            image_menu = null;
+         });
+        
+        Gtk.MenuItem save_image_item = new Gtk.MenuItem.with_mnemonic(_("_Save Image As..."));
+        save_image_item.activate.connect(() => {
+            save_buffer_to_file(replaced_image.filename, replaced_image.buffer);
+        });
+        image_menu.append(save_image_item);
+        
+        image_menu.show_all();
+        
+        image_menu.popup(null, null, null, 0, Gtk.get_current_event_time());
     }
     
     private void on_message_menu_selection_done() {
@@ -1648,23 +1830,6 @@ public class ConversationViewer : Gtk.Box {
         }
         
         return menu;
-    }
-    
-    private void show_replaced_image_menu(string? filename, Geary.Memory.Buffer buffer) {
-        image_menu = new Gtk.Menu();
-        image_menu.selection_done.connect(() => {
-            image_menu = null;
-         });
-        
-        Gtk.MenuItem save_image_item = new Gtk.MenuItem.with_mnemonic(_("_Save Image As..."));
-        save_image_item.activate.connect(() => {
-            save_buffer_to_file(filename, buffer);
-        });
-        image_menu.append(save_image_item);
-        
-        image_menu.show_all();
-        
-        image_menu.popup(null, null, null, 0, Gtk.get_current_event_time());
     }
     
     private void show_message_menu(Geary.Email email) {
@@ -1821,13 +1986,23 @@ public class ConversationViewer : Gtk.Box {
                 // Get the MIME content for the image.
                 WebKit.DOM.HTMLImageElement img = (WebKit.DOM.HTMLImageElement) inline_list.item(i);
                 string? src = img.get_attribute("src");
-                if (Geary.String.is_empty(src)) {
+                if (Geary.String.is_empty(src))
                     continue;
-                } else if (src.has_prefix("cid:")) {
-                    string mime_id = src.substring(4);
+                
+                // if no Content-ID, then leave as-is, but note if a non-data: URI is being used for
+                // purposes of detecting remote images
+                string? content_id = src.has_prefix("cid:") ? src.substring(4) : null;
+                if (Geary.String.is_empty(content_id)) {
+                    remote_images = remote_images || !src.has_prefix("data:");
                     
-                    string? filename = message.get_content_filename_by_mime_id(mime_id);
-                    Geary.Memory.Buffer image_content = message.get_content_by_mime_id(mime_id);
+                    continue;
+                }
+                
+                // if image has a Content-ID and it's already been replaced by the image replacer,
+                // drop this tag, otherwise fix up this one with the Base-64 data URI of the image
+                if (!replaced_content_ids.contains(content_id)) {
+                    string? filename = message.get_content_filename_by_mime_id(content_id);
+                    Geary.Memory.Buffer image_content = message.get_content_by_mime_id(content_id);
                     Geary.Memory.UnownedBytesBuffer? unowned_buffer =
                         image_content as Geary.Memory.UnownedBytesBuffer;
                     
@@ -1837,10 +2012,10 @@ public class ConversationViewer : Gtk.Box {
                         guess = ContentType.guess(null, unowned_buffer.to_unowned_uint8_array(), null);
                     else
                         guess = ContentType.guess(null, image_content.get_uint8_array(), null);
-                        
+                    
                     string mimetype = ContentType.get_mime_type(guess);
                     
-                    // Replace the SRC to a data URIm the class to a known label for the popup menu,
+                    // Replace the SRC to a data URI, the class to a known label for the popup menu,
                     // and the ALT to its filename, if supplied
                     img.set_attribute("src", assemble_data_uri(mimetype, image_content));
                     img.set_attribute("class", DATA_IMAGE_CLASS);
@@ -1849,9 +2024,10 @@ public class ConversationViewer : Gtk.Box {
                     
                     // stash here so inlined image isn't listed as attachment (esp. if it has no
                     // Content-Disposition)
-                    inlined_content_ids.add(mime_id);
-                } else if (!src.has_prefix("data:")) {
-                    remote_images = true;
+                    inlined_content_ids.add(content_id);
+                } else {
+                    // replaced by data: URI, remove this tag and let the inserted one shine through
+                    img.parent_element.remove_child(img);
                 }
             }
             
@@ -1866,7 +2042,7 @@ public class ConversationViewer : Gtk.Box {
                     debug("Error removing inlined image: %s", error.message);
                 }
             }
-
+            
             // Now return the whole message.
             return container.get_inner_html();
         } catch (Error e) {
@@ -1970,17 +2146,15 @@ public class ConversationViewer : Gtk.Box {
         string value = "";
         Gee.List<Geary.RFC822.MailboxAddress> list = addresses.get_all();
         foreach (Geary.RFC822.MailboxAddress a in list) {
-            if (a.name != null) {
-                value += "<a href='mailto:%s'>".printf(
-                    Uri.escape_string("%s <%s>".printf(a.name, a.address)));
-                value += "<span class='address_name'>%s</span> ".printf(a.name);
-                value += "<span class='address_value'>%s</span>".printf(a.address);
+            value += "<a href='mailto:%s'>".printf(Uri.escape_string(a.to_rfc822_string()));
+            if (!Geary.String.is_empty(a.name)) {
+                value += "<span class='address_name'>%s</span> ".printf(Geary.HTML.escape_markup(a.name));
+                value += "<span class='address_value'>%s</span>".printf(Geary.HTML.escape_markup(a.address));
             } else {
-                value += "<a href='mailto:%s'>".printf(a.address);
-                value += "<span class='address_name'>%s</span>".printf(a.address);
+                value += "<span class='address_name'>%s</span>".printf(Geary.HTML.escape_markup(a.address));
             }
             value += "</a>";
-
+            
             if (++i < list.size)
                 value += ", ";
         }
@@ -2307,11 +2481,6 @@ public class ConversationViewer : Gtk.Box {
     private bool in_drafts_folder() {
         return current_folder != null && current_folder.special_folder_type
             == Geary.SpecialFolderType.DRAFTS;
-    }
-    
-    // The Composer may need to adjust the mode back to conversation
-    public void show_conversation_div() {
-        set_mode(DisplayMode.CONVERSATION);
     }
 }
 

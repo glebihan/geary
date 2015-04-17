@@ -1,4 +1,4 @@
-/* Copyright 2011-2014 Yorba Foundation
+/* Copyright 2011-2015 Yorba Foundation
  *
  * This software is licensed under the GNU Lesser General Public License
  * (version 2.1 or later).  See the COPYING file in this distribution.
@@ -364,7 +364,7 @@ public abstract class Geary.FolderRoot : Geary.FolderPath {
      * The default case sensitivity of each element in the {@link FolderPath}.
      *
      * @see FolderRoot.case_sensitive
-     * @see FolderRoot.get_child
+     * @see FolderPath.get_child
      */
     public bool default_case_sensitivity { get; private set; }
     

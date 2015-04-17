@@ -1,4 +1,4 @@
-/* Copyright 2012-2014 Yorba Foundation
+/* Copyright 2012-2015 Yorba Foundation
  *
  * This software is licensed under the GNU Lesser General Public License
  * (version 2.1 or later).  See the COPYING file in this distribution.
@@ -17,11 +17,11 @@ public class Geary.Nonblocking.ReportingSemaphore<G> : Geary.Nonblocking.Semapho
         result = default_result;
     }
     
-    protected override void notify_at_reset() {
+    public override void reset() {
         result = default_result;
         err = null;
         
-        base.notify_at_reset();
+        base.reset();
     }
     
     public void notify_result(G result, Error? err) throws Error {

@@ -1,4 +1,4 @@
-/* Copyright 2011-2014 Yorba Foundation
+/* Copyright 2011-2015 Yorba Foundation
  *
  * This software is licensed under the GNU Lesser General Public License
  * (version 2.1 or later).  See the COPYING file in this distribution.
@@ -39,6 +39,18 @@ public class Geary.EmailFlags : Geary.NamedFlags {
     } }
     
     public EmailFlags() {
+    }
+    
+    /**
+     * Create a new {@link EmailFlags} container initialized with one or more flags.
+     */
+    public EmailFlags.with(Geary.NamedFlag flag1, ...) {
+        va_list args = va_list();
+        NamedFlag? flag = flag1;
+        
+        do {
+            add(flag);
+        } while((flag = args.arg()) != null);
     }
     
     // Convenience method to check if the unread flag is set.

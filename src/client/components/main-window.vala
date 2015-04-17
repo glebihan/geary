@@ -1,4 +1,4 @@
-/* Copyright 2011-2014 Yorba Foundation
+/* Copyright 2011-2015 Yorba Foundation
  *
  * This software is licensed under the GNU Lesser General Public License
  * (version 2.1 or later).  See the COPYING file in this distribution.
@@ -15,9 +15,11 @@ public class MainWindow : Gtk.ApplicationWindow {
     public FolderList.Tree folder_list { get; private set; default = new FolderList.Tree(); }
     public ConversationListStore conversation_list_store { get; private set; default = new ConversationListStore(); }
     public MainToolbar main_toolbar { get; private set; }
+    public SearchBar search_bar { get; private set; default = new SearchBar(); }
     public ConversationListView conversation_list_view  { get; private set; }
     public ConversationViewer conversation_viewer { get; private set; default = new ConversationViewer(); }
     public StatusBar status_bar { get; private set; default = new StatusBar(); }
+    public Geary.Folder? current_folder { get; private set; default = null; }
     
     public int window_width { get; set; }
     public int window_height { get; set; }
@@ -28,15 +30,14 @@ public class MainWindow : Gtk.ApplicationWindow {
     
     private Gtk.ScrolledWindow conversation_list_scrolled;
     private MonitoredSpinner spinner = new MonitoredSpinner();
+    private Gtk.Box folder_box;
+    private Gtk.Box conversation_box;
     private Geary.AggregateProgressMonitor progress_monitor = new Geary.AggregateProgressMonitor();
     private Geary.ProgressMonitor? conversation_monitor_progress = null;
     private Geary.ProgressMonitor? folder_progress = null;
-    private Geary.Folder? current_folder = null;
     
     public MainWindow(GearyApplication application) {
         Object(application: application);
-        
-        title = GearyApplication.NAME;
         
         conversation_list_view = new ConversationListView(conversation_list_store);
         
@@ -48,11 +49,15 @@ public class MainWindow : Gtk.ApplicationWindow {
         // the value in dconf changes *immediately*, and stays saved
         // in the event of a crash.
         Configuration config = GearyApplication.instance.config;
-        config.bind(Configuration.FOLDER_LIST_PANE_POSITION_KEY, folder_paned, "position");
         config.bind(Configuration.MESSAGES_PANE_POSITION_KEY, conversations_paned, "position");
         config.bind(Configuration.WINDOW_WIDTH_KEY, this, "window-width");
         config.bind(Configuration.WINDOW_HEIGHT_KEY, this, "window-height");
         config.bind(Configuration.WINDOW_MAXIMIZE_KEY, this, "window-maximized");
+        // Update to layout
+        if (config.folder_list_pane_position_horizontal == -1) {
+            config.folder_list_pane_position_horizontal = config.folder_list_pane_position_old;
+            config.messages_pane_position += config.folder_list_pane_position_old;
+        }
         
         add_accel_group(GearyApplication.instance.ui_manager.get_accel_group());
         
@@ -70,6 +75,8 @@ public class MainWindow : Gtk.ApplicationWindow {
         key_press_event.connect(on_key_press_event);
         key_release_event.connect(on_key_release_event);
         focus_in_event.connect(on_focus_event);
+        GearyApplication.instance.config.settings.changed[
+            Configuration.FOLDER_LIST_PANE_HORIZONTAL_KEY].connect(on_change_orientation);
         GearyApplication.instance.controller.notify[GearyController.PROP_CURRENT_CONVERSATION].
             connect(on_conversation_monitor_changed);
         GearyApplication.instance.controller.folder_selected.connect(on_folder_selected);
@@ -78,13 +85,28 @@ public class MainWindow : Gtk.ApplicationWindow {
         
         // Toolbar.
         main_toolbar = new MainToolbar();
-#if !ENABLE_UNITY
-        main_toolbar.show_close_button = true;
-        set_titlebar(main_toolbar);
-#endif
+        main_toolbar.bind_property("search-open", search_bar, "search-mode-enabled",
+            BindingFlags.SYNC_CREATE | BindingFlags.BIDIRECTIONAL);
+        if (!GearyApplication.instance.is_running_unity) {
+            main_toolbar.show_close_button = true;
+            set_titlebar(main_toolbar);
+            title = GearyApplication.NAME;
+        } else {
+            BindingTransformFunc title_func = (binding, source, ref target) => {
+                string folder = current_folder != null ? current_folder.get_display_name() + " " : "";
+                string account = main_toolbar.account != null ? "(%s)".printf(main_toolbar.account) : "";
+                
+                target = "%s%s - %s".printf(folder, account, GearyApplication.NAME);
+                
+                return true;
+            };
+            bind_property("current-folder", this, "title", BindingFlags.SYNC_CREATE, title_func);
+            main_toolbar.bind_property("account", this, "title", BindingFlags.SYNC_CREATE, title_func);
+        }
         
         set_styling();
         create_layout();
+        on_change_orientation();
     }
     
     public override void show_all() {
@@ -94,9 +116,6 @@ public class MainWindow : Gtk.ApplicationWindow {
             maximize();
         
         base.show_all();
-        
-        // Some buttons need to be hidden, so we have to do this after we show everything.
-        main_toolbar.update_trash_buttons(true, true);
     }
     
     private bool on_delete_event() {
@@ -140,11 +159,61 @@ public class MainWindow : Gtk.ApplicationWindow {
         Gtk.CssProvider provider = new Gtk.CssProvider();
         Gtk.StyleContext.add_provider_for_screen(Gdk.Display.get_default().get_default_screen(),
             provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION);
+        // Gtk < 3.14: No borders along top or left side of window
+        string css = """
+            .folder-frame {
+                border-left-width: 0px;
+                border-top-width: 0px;
+            }
+            .sidebar-pane-separator.horizontal .conversation-frame {
+                border-top-width: 0px;
+                border-bottom-width: 0px;
+            }
+            .sidebar-pane-separator.vertical .conversation-frame {
+                border-left-width: 0px;
+            }
+            ComposerBox {
+                border-left-width: 0px;
+                border-right-width: 0px;
+                border-bottom-width: 0px;
+            }
+            ComposerBox.full-pane {
+                border-top-width: 0px;
+            }
+            ComposerEmbed GtkHeaderBar,
+            ComposerBox GtkHeaderBar,
+            GtkBox.vertical GtkHeaderBar {
+                border-radius: 0px;
+            }
+            .geary-titlebar-left:dir(ltr),
+            .geary-titlebar-right:dir(rtl) {
+                border-top-right-radius: 0px;
+            }
+            .geary-titlebar-right:dir(ltr),
+            .geary-titlebar-left:dir(rtl) {
+                border-top-left-radius: 0px;
+            }
+        """;
+        
+        if(Gtk.MAJOR_VERSION > 3 || Gtk.MAJOR_VERSION == 3 && Gtk.MINOR_VERSION >= 14) {
+            // Gtk >= 3.14: Borders only along status bar
+            css += """
+                  .folder-frame {
+                      border-right-width: 0px;
+                  }
+                  .sidebar-pane-separator.vertical .folder-frame {
+                      border-bottom-width: 0px;
+                  }
+                  .conversation-frame {
+                      border-top-width: 0px;
+                      border-left-width: 0px;
+                      border-right-width: 0px;
+                  }
+            """;
+        }
+
         try {
-            provider.load_from_data("""
-                GtkBox GtkHeaderBar {
-                    border-radius: 0px;
-                }""", -1);
+            provider.load_from_data(css, -1);
         } catch (Error error) {
             debug("Could not load styling from data: %s", error.message);
         }
@@ -160,7 +229,10 @@ public class MainWindow : Gtk.ApplicationWindow {
         folder_list_scrolled.add(folder_list);
         Gtk.Frame folder_frame = new Gtk.Frame(null);
         folder_frame.shadow_type = Gtk.ShadowType.IN;
+        folder_frame.get_style_context ().add_class ("folder-frame");
         folder_frame.add(folder_list_scrolled);
+        folder_box = new Gtk.Box(Gtk.Orientation.VERTICAL, 0);
+        folder_box.pack_start(folder_frame, true, true);
         
         // message list
         conversation_list_scrolled = new Gtk.ScrolledWindow(null, null);
@@ -169,17 +241,16 @@ public class MainWindow : Gtk.ApplicationWindow {
         conversation_list_scrolled.add(conversation_list_view);
         Gtk.Frame conversation_frame = new Gtk.Frame(null);
         conversation_frame.shadow_type = Gtk.ShadowType.IN;
+        conversation_frame.get_style_context ().add_class ("conversation-frame");
         conversation_frame.add(conversation_list_scrolled);
+        conversation_box = new Gtk.Box(Gtk.Orientation.VERTICAL, 0);
+        conversation_box.pack_start(conversation_frame, true, true);
         
         // Three-pane display.
-        Gtk.Box status_bar_box = new Gtk.Box(Gtk.Orientation.VERTICAL, 0);
         status_bar.set_size_request(-1, STATUS_BAR_HEIGHT);
         status_bar.set_border_width(2);
         spinner.set_size_request(STATUS_BAR_HEIGHT - 2, -1);
         status_bar.add(spinner);
-        status_bar_box.pack_start(folder_frame);
-        status_bar_box.pack_start(status_bar, false, false, 0);
-        status_bar_box.get_style_context().add_class(Gtk.STYLE_CLASS_SIDEBAR);
         
         folder_paned.get_style_context().add_class("sidebar-pane-separator");
         
@@ -187,18 +258,23 @@ public class MainWindow : Gtk.ApplicationWindow {
         viewer_frame.shadow_type = Gtk.ShadowType.NONE;
         viewer_frame.add(conversation_viewer);
         
-         // Message list left of message viewer.
-        conversations_paned.pack1(conversation_frame, false, false);
+        // Folder list to the left of everything.
+        folder_paned.pack1(folder_box, false, false);
+        folder_paned.pack2(conversation_box, true, false);
+        
+        Gtk.Box search_bar_box = new Gtk.Box(Gtk.Orientation.VERTICAL, 0);
+        search_bar_box.pack_start(search_bar, false, false, 0);
+        search_bar_box.pack_start(folder_paned);
+        search_bar_box.get_style_context().add_class(Gtk.STYLE_CLASS_SIDEBAR);
+        
+        // Message list left of message viewer.
+        conversations_paned.pack1(search_bar_box, false, false);
         conversations_paned.pack2(viewer_frame, true, true);
         
-        // Folder list to the left of everything.
-        folder_paned.pack1(status_bar_box, false, false);
-        folder_paned.pack2(conversations_paned, true, false);
+        if (GearyApplication.instance.is_running_unity)
+            main_layout.pack_start(main_toolbar, false, true, 0);
         
-#if ENABLE_UNITY
-        main_layout.pack_start(main_toolbar, false, true, 0);
-#endif
-        main_layout.pack_end(folder_paned, true, true, 0);
+        main_layout.pack_end(conversations_paned, true, true, 0);
         
         add(main_layout);
     }
@@ -212,7 +288,7 @@ public class MainWindow : Gtk.ApplicationWindow {
     
     private bool on_key_press_event(Gdk.EventKey event) {
         if ((event.keyval == Gdk.Key.Shift_L || event.keyval == Gdk.Key.Shift_R)
-            && (event.state & Gdk.ModifierType.SHIFT_MASK) == 0 && !main_toolbar.search_entry_has_focus)
+            && (event.state & Gdk.ModifierType.SHIFT_MASK) == 0 && !search_bar.search_entry_has_focus)
             on_shift_key(true);
         
         // Check whether the focused widget wants to handle it, if not let the accelerators kick in
@@ -225,7 +301,7 @@ public class MainWindow : Gtk.ApplicationWindow {
         // the shift key to report as released when they release ALL of them.
         // There doesn't seem to be an easy way to do this in Gdk.
         if ((event.keyval == Gdk.Key.Shift_L || event.keyval == Gdk.Key.Shift_R)
-            && !main_toolbar.search_entry_has_focus)
+            && !search_bar.search_entry_has_focus)
             on_shift_key(false);
         
         return propagate_key_event(event);
@@ -296,15 +372,46 @@ public class MainWindow : Gtk.ApplicationWindow {
         }
     }
     
+    private void on_change_orientation() {
+        bool horizontal = GearyApplication.instance.config.folder_list_pane_horizontal;
+        bool initial = true;
+        
+        if (status_bar.parent != null) {
+            status_bar.parent.remove(status_bar);
+            initial = false;
+        }
+        
+        GLib.Settings.unbind(folder_paned, "position");
+        folder_paned.orientation = horizontal ? Gtk.Orientation.HORIZONTAL :
+            Gtk.Orientation.VERTICAL;
+        
+        int folder_list_width =
+            GearyApplication.instance.config.folder_list_pane_position_horizontal;
+        if (horizontal) {
+            if (!initial)
+                conversations_paned.position += folder_list_width;
+            folder_box.pack_start(status_bar, false, false);
+        } else {
+            if (!initial)
+                conversations_paned.position -= folder_list_width;
+            conversation_box.pack_start(status_bar, false, false);
+        }
+        
+        GearyApplication.instance.config.bind(
+            horizontal ? Configuration.FOLDER_LIST_PANE_POSITION_HORIZONTAL_KEY
+            : Configuration.FOLDER_LIST_PANE_POSITION_VERTICAL_KEY,
+            folder_paned, "position");
+    }
+    
     private void update_headerbar() {
         if (current_folder == null) {
-            main_toolbar.title = null;
-            main_toolbar.subtitle = null;
+            main_toolbar.account = null;
+            main_toolbar.folder = null;
             
             return;
         }
         
-        main_toolbar.title = current_folder.account.information.nickname;
+        main_toolbar.account = current_folder.account.information.nickname;
         
         /// Current folder's name followed by its unread count, i.e. "Inbox (42)"
         // except for Drafts and Outbox, where we show total count
@@ -321,8 +428,8 @@ public class MainWindow : Gtk.ApplicationWindow {
         }
         
         if (count > 0)
-            main_toolbar.subtitle = _("%s (%d)").printf(current_folder.get_display_name(), count);
+            main_toolbar.folder = _("%s (%d)").printf(current_folder.get_display_name(), count);
         else
-            main_toolbar.subtitle = current_folder.get_display_name();
+            main_toolbar.folder = current_folder.get_display_name();
     }
 }

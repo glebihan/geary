@@ -1,4 +1,4 @@
-/* Copyright 2011-2014 Yorba Foundation
+/* Copyright 2011-2015 Yorba Foundation
  *
  * This software is licensed under the GNU Lesser General Public License
  * (version 2.1 or later).  See the COPYING file in this distribution.
@@ -9,11 +9,11 @@
  *
  * Most FETCH requests can use this simple specifier to return various parts of the message.
  * More complicated requests (and requests for partial header or body sections) must use a
- * {@link FetchBodyDataType} specifier.
+ * {@link FetchBodyDataSpecifier} specifier.
  *
  * See [[http://tools.ietf.org/html/rfc3501#section-6.4.5]]
  *
- * @see FetchBodyDataType
+ * @see FetchBodyDataSpecifier
  */
 
 public enum Geary.Imap.FetchDataSpecifier {
@@ -78,12 +78,10 @@ public enum Geary.Imap.FetchDataSpecifier {
     }
     
     /**
-     * Converts a plain string into a {@link FetchDataType}.
-     *
-     * @throws ImapError.PARSE_ERROR if not a recognized value.
+     * Decodes a {@link StringParameter} into a {@link FetchDataSpecifier}.
      */
-    public static FetchDataSpecifier decode(string value) throws ImapError {
-        switch (value.down()) {
+    public static FetchDataSpecifier from_parameter(StringParameter strparam) throws ImapError {
+        switch (strparam.as_lower()) {
             case "uid":
                 return UID;
             
@@ -124,28 +122,20 @@ public enum Geary.Imap.FetchDataSpecifier {
                 return FULL;
             
             default:
-                throw new ImapError.PARSE_ERROR("\"%s\" is not a valid fetch-command data item", value);
+                throw new ImapError.PARSE_ERROR("\"%s\" is not a valid fetch-command data item",
+                    strparam.to_string());
         }
     }
     
     /**
-     * Turns this {@link FetchDataType} into a {@link StringParameter} for transmission.
+     * Turns this {@link FetchDataSpecifier} into a {@link StringParameter} for transmission.
      */
     public StringParameter to_parameter() {
         return new AtomParameter(to_string());
     }
     
     /**
-     * Decoders a {@link StringParameter} into a {@link FetchDataType} using {@link decode}.
-     *
-     * @see decode
-     */
-    public static FetchDataSpecifier from_parameter(StringParameter strparam) throws ImapError {
-        return decode(strparam.value);
-    }
-    
-    /**
-     * Returns the appropriate {@link FetchDataDecoder} for this {@link FetchDataType}.
+     * Returns the appropriate {@link FetchDataDecoder} for this {@link FetchDataSpecifier}.
      *
      * The FetchDataDecoder can then be used to convert the associated {@link Parameter}s into
      * {@link Imap.MessageData}.

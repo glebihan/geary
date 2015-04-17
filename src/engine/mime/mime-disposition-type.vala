@@ -1,4 +1,4 @@
-/* Copyright 2013-2014 Yorba Foundation
+/* Copyright 2013-2015 Yorba Foundation
  *
  * This software is licensed under the GNU Lesser General Public License
  * (version 2.1 or later).  See the COPYING file in this distribution.
@@ -35,7 +35,7 @@ public enum Geary.Mime.DispositionType {
         if (String.is_empty_or_whitespace(str))
             return UNSPECIFIED;
         
-        switch (str.down()) {
+        switch (Ascii.strdown(str)) {
             case "inline":
                 return INLINE;
             

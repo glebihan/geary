@@ -1,4 +1,4 @@
-/* Copyright 2012-2014 Yorba Foundation
+/* Copyright 2012-2015 Yorba Foundation
  *
  * This software is licensed under the GNU Lesser General Public License
  * (version 2.1 or later).  See the COPYING file in this distribution.
@@ -33,7 +33,7 @@ public abstract class Geary.Db.Context : BaseObject {
         return Db.throw_on_error(this, method, result, raw);
     }
     
-    [PrintFormat]
+    [PrintfFormat]
     protected void log(string fmt, ...) {
         if (!Logging.are_all_flags_set(Logging.Flag.SQL))
             return;

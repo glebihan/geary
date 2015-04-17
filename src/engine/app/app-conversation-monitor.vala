@@ -1,4 +1,4 @@
-/* Copyright 2011-2014 Yorba Foundation
+/* Copyright 2011-2015 Yorba Foundation
  *
  * This software is licensed under the GNU Lesser General Public License
  * (version 2.1 or later).  See the COPYING file in this distribution.
@@ -11,8 +11,6 @@ public class Geary.App.ConversationMonitor : BaseObject {
      */
     public const Geary.Email.Field REQUIRED_FIELDS = Geary.Email.Field.REFERENCES |
         Geary.Email.Field.FLAGS | Geary.Email.Field.DATE;
-    
-    private const int RETRY_CONNECTION_SEC = 15;
     
     // # of messages to load at a time as we attempt to fill the min window.
     private const int WINDOW_FILL_MESSAGE_COUNT = 5;
@@ -29,7 +27,6 @@ public class Geary.App.ConversationMonitor : BaseObject {
     }
     
     public Geary.Folder folder { get; private set; }
-    public bool reestablish_connections { get; set; default = true; }
     public bool is_monitoring { get; private set; default = false; }
     public int min_window_count { get { return _min_window_count; }
         set {
@@ -50,7 +47,6 @@ public class Geary.App.ConversationMonitor : BaseObject {
     
     /**
      * "monitoring-started" is fired when the Conversations folder has been opened for monitoring.
-     * This may be called multiple times if a connection is being reestablished.
      */
     public virtual signal void monitoring_started() {
         Logging.debug(Logging.Flag.CONVERSATIONS, "[%s] ConversationMonitor::monitoring_started",
@@ -60,13 +56,10 @@ public class Geary.App.ConversationMonitor : BaseObject {
     /**
      * "monitoring-stopped" is fired when the Geary.Folder object has closed (either due to error
      * or user) and the Conversations object is therefore unable to continue monitoring.
-     *
-     * retrying is set to true if the Conversations object will, in the background, attempt to
-     * reestablish a connection to the Folder and continue operating.
      */
-    public virtual signal void monitoring_stopped(bool retrying) {
-        Logging.debug(Logging.Flag.CONVERSATIONS, "[%s] ConversationMonitor::monitoring_stopped retrying=%s",
-            folder.to_string(), retrying.to_string());
+    public virtual signal void monitoring_stopped() {
+        Logging.debug(Logging.Flag.CONVERSATIONS, "[%s] ConversationMonitor::monitoring_stopped",
+            folder.to_string());
     }
     
     /**
@@ -199,8 +192,8 @@ public class Geary.App.ConversationMonitor : BaseObject {
         monitoring_started();
     }
     
-    protected virtual void notify_monitoring_stopped(bool retrying) {
-        monitoring_stopped(retrying);
+    protected virtual void notify_monitoring_stopped() {
+        monitoring_stopped();
     }
     
     protected virtual void notify_scan_started() {
@@ -327,15 +320,13 @@ public class Geary.App.ConversationMonitor : BaseObject {
      * supplied to start_monitoring_async() is used during monitoring but *not* for this method.
      * If null is supplied as the Cancellable, no cancellable is used; pass the original Cancellable
      * here to use that.
+     *
+     * Returns a result code that is semantically identical to the result of
+     * {@link Geary.Folder.close_async}.
      */
-    public async void stop_monitoring_async(bool close_folder, Cancellable? cancellable) throws Error {
-        yield stop_monitoring_internal_async(close_folder, false, cancellable);
-    }
-    
-    private async void stop_monitoring_internal_async(bool close_folder, bool retrying,
-        Cancellable? cancellable) throws Error {
+    public async bool stop_monitoring_async(Cancellable? cancellable) throws Error {
         if (!is_monitoring)
-            return;
+            return false;
         
         yield operation_queue.stop_processing_async(cancellable);
         
@@ -349,24 +340,25 @@ public class Geary.App.ConversationMonitor : BaseObject {
         folder.account.email_flags_changed.disconnect(on_account_email_flags_changed);
         folder.account.email_locally_complete.disconnect(on_account_email_locally_complete);
         
+        bool closing = false;
         Error? close_err = null;
-        if (close_folder) {
-            try {
-                yield folder.close_async(cancellable);
-            } catch (Error err) {
-                // throw, but only after cleaning up (which is to say, if close_async() fails,
-                // then the Folder is still treated as closed, which is the best that can be
-                // expected; it definitely shouldn't still be considered open).
-                debug("Unable to close monitored folder %s: %s", folder.to_string(), err.message);
-                
-                close_err = err;
-            }
+        try {
+            closing = yield folder.close_async(cancellable);
+        } catch (Error err) {
+            // throw, but only after cleaning up (which is to say, if close_async() fails,
+            // then the Folder is still treated as closed, which is the best that can be
+            // expected; it definitely shouldn't still be considered open).
+            debug("Unable to close monitored folder %s: %s", folder.to_string(), err.message);
+            
+            close_err = err;
         }
         
-        notify_monitoring_stopped(retrying);
+        notify_monitoring_stopped();
         
         if (close_err != null)
             throw close_err;
+        
+        return closing;
     }
     
     /**
@@ -502,8 +494,7 @@ public class Geary.App.ConversationMonitor : BaseObject {
             Geary.SpecialFolderType.DRAFTS,
         };
         
-        Gee.ArrayList<Geary.FolderPath?> blacklist
-            = new Gee.ArrayList<Geary.FolderPath?>();
+        Gee.ArrayList<Geary.FolderPath?> blacklist = new Gee.ArrayList<Geary.FolderPath?>();
         foreach (Geary.SpecialFolderType type in blacklisted_folder_types) {
             try {
                 Geary.Folder? blacklist_folder = folder.account.get_special_folder(type);
@@ -515,10 +506,7 @@ public class Geary.App.ConversationMonitor : BaseObject {
             }
         }
         
-        // Add the current folder so we omit search results we can find through
-        // folder monitoring.  Add "no folders" so we omit results that have
-        // been deleted permanently from the server.
-        blacklist.add(folder.path);
+        // Add "no folders" so we omit results that have been deleted permanently from the server.
         blacklist.add(null);
         
         return blacklist;
@@ -638,7 +626,7 @@ public class Geary.App.ConversationMonitor : BaseObject {
     }
     
     internal async void remove_emails_async(Gee.Collection<Geary.EmailIdentifier> removed_ids) {
-        debug("%d messages(s) removed to %s, trimming/removing conversations...", removed_ids.size,
+        debug("%d messages(s) removed from %s, trimming/removing conversations...", removed_ids.size,
             folder.to_string());
         
         Gee.Collection<Geary.App.Conversation> removed;
@@ -739,7 +727,10 @@ public class Geary.App.ConversationMonitor : BaseObject {
      * Attempts to load enough conversations to fill min_window_count.
      */
     internal async void fill_window_async(bool is_insert) {
-        if (!is_monitoring || min_window_count <= conversations.size)
+        if (!is_monitoring)
+            return;
+        
+        if (!is_insert && min_window_count <= conversations.size)
             return;
         
         int initial_message_count = conversations.get_email_count();

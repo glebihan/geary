@@ -1,4 +1,4 @@
-/* Copyright 2011-2014 Yorba Foundation
+/* Copyright 2011-2015 Yorba Foundation
  *
  * This software is licensed under the GNU Lesser General Public License
  * (version 2.1 or later).  See the COPYING file in this distribution.
@@ -46,10 +46,10 @@ public class Geary.RFC822.MessageIDList : Geary.MessageData.AbstractMessageData,
         list = new Gee.ArrayList<MessageID>();
     }
     
-    public MessageIDList.from_list(Gee.List<MessageID> list) {
+    public MessageIDList.from_collection(Gee.Collection<MessageID> collection) {
         this ();
         
-        foreach(MessageID msg_id in list)
+        foreach(MessageID msg_id in collection)
             this.list.add(msg_id);
     }
     
@@ -77,10 +77,10 @@ public class Geary.RFC822.MessageIDList : Geary.MessageData.AbstractMessageData,
         // be a little less liberal in its parsing.
         StringBuilder canonicalized = new StringBuilder();
         int index = 0;
-        unichar ch;
+        char ch;
         bool in_message_id = false;
         bool bracketed = false;
-        while (value.get_next_char(ref index, out ch)) {
+        while (Ascii.get_next_char(value, ref index, out ch)) {
             bool add_char = false;
             switch (ch) {
                 case '<':
@@ -126,7 +126,7 @@ public class Geary.RFC822.MessageIDList : Geary.MessageData.AbstractMessageData,
             }
             
             if (add_char)
-                canonicalized.append_unichar(ch);
+                canonicalized.append_c(ch);
             
             if (!in_message_id && !String.is_empty(canonicalized.str)) {
                 list.add(new MessageID(canonicalized.str));
@@ -139,8 +139,8 @@ public class Geary.RFC822.MessageIDList : Geary.MessageData.AbstractMessageData,
         if (!String.is_empty(canonicalized.str))
             list.add(new MessageID(canonicalized.str));
         
-        if (!String.is_empty(value))
-            assert(list.size > 0);
+        // don't assert that list.size > 0; even though this method should generated a decoded ID
+        // from any non-empty string, an empty Message-ID (i.e. "<>") won't.
     }
     
     public override string to_string() {
@@ -210,8 +210,8 @@ public class Geary.RFC822.Date : Geary.RFC822.MessageData, Geary.MessageData.Abs
     }
 }
 
-public class Geary.RFC822.Size : Geary.MessageData.LongMessageData, Geary.RFC822.MessageData {
-    public Size(long value) {
+public class Geary.RFC822.Size : Geary.MessageData.Int64MessageData, Geary.RFC822.MessageData {
+    public Size(int64 value) {
         base (value);
     }
 }

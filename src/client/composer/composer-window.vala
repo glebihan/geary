@@ -1,4 +1,4 @@
-/* Copyright 2011-2014 Yorba Foundation
+/* Copyright 2011-2015 Yorba Foundation
  *
  * This software is licensed under the GNU Lesser General Public License
  * (version 2.1 or later).  See the COPYING file in this distribution.
@@ -7,30 +7,23 @@
 // Window for sending messages.
 public class ComposerWindow : Gtk.Window, ComposerContainer {
 
-    private const string DEFAULT_TITLE = _("New Message");
-    
     private bool closing = false;
     
     public ComposerWindow(ComposerWidget composer) {
         Object(type: Gtk.WindowType.TOPLEVEL);
         
         add(composer);
-        composer.subject_entry.changed.connect(() => {
-#if ENABLE_UNITY
-            title
-#else
-            composer.header.title
-#endif
-                = Geary.String.is_empty(composer.subject_entry.text.strip()) ? DEFAULT_TITLE :
-                composer.subject_entry.text.strip();
-        });
-        composer.subject_entry.changed();
         
-#if !ENABLE_UNITY
-        composer.header.show_close_button = true;
-        composer.header.parent.remove(composer.header);
-        set_titlebar(composer.header);
-#endif
+        if (!GearyApplication.instance.is_running_unity) {
+            composer.header.show_close_button = true;
+            composer.free_header();
+            set_titlebar(composer.header);
+            composer.bind_property("window-title", composer.header, "title",
+                BindingFlags.SYNC_CREATE);
+        } else {
+            composer.embed_header();
+            composer.bind_property("window-title", this, "title", BindingFlags.SYNC_CREATE);
+        }
         
         add_accel_group(composer.ui.get_accel_group());
         show();
@@ -58,6 +51,10 @@ public class ComposerWindow : Gtk.Window, ComposerContainer {
     
     public void vanish() {
         hide();
+    }
+    
+    public void remove_composer() {
+        warning("Detached composer received remove");
     }
 }
 

@@ -1,11 +1,17 @@
-/* Copyright 2011-2014 Yorba Foundation
+/* Copyright 2011-2015 Yorba Foundation
  *
  * This software is licensed under the GNU Lesser General Public License
  * (version 2.1 or later).  See the COPYING file in this distribution.
  */
 
 private class Geary.ImapDB.Account : BaseObject {
-    private const int POPULATE_SEARCH_TABLE_DELAY_SEC = 30;
+    private const int POPULATE_SEARCH_TABLE_DELAY_SEC = 5;
+    
+    // These characters are chosen for being commonly used to continue a single word (such as
+    // extended last names, i.e. "Lars-Eric") or in terms commonly searched for in an email client,
+    // i.e. unadorned mailbox addresses.  Note that characters commonly used for wildcards or that
+    // would be interpreted as wildcards by SQLite are not included here.
+    private const unichar[] SEARCH_TERM_CONTINUATION_CHARS = { '-', '_', '.', '@' };
     
     private class FolderReference : Geary.SmartReference {
         public Geary.FolderPath path;
@@ -17,28 +23,18 @@ private class Geary.ImapDB.Account : BaseObject {
         }
     }
     
-    private class SearchOffset {
-        public int column;      // Column in search table
-        public int byte_offset; // Offset (in bytes) of search term in string
-        public int size;        // Size (in bytes) of the search term in string
-        
-        public SearchOffset(string[] offset_string) {
-            column = int.parse(offset_string[0]);
-            byte_offset = int.parse(offset_string[2]);
-            size = int.parse(offset_string[3]);
-        }
-    }
-    
     public signal void email_sent(Geary.RFC822.Message rfc822);
     
     // Only available when the Account is opened
     public SmtpOutboxFolder? outbox { get; private set; default = null; }
-    public SearchFolder? search_folder { get; private set; default = null; }
+    public Geary.SearchFolder? search_folder { get; private set; default = null; }
     public ImapEngine.ContactStore contact_store { get; private set; }
     public IntervalProgressMonitor search_index_monitor { get; private set; 
         default = new IntervalProgressMonitor(ProgressType.SEARCH_INDEX, 0, 0); }
     public SimpleProgressMonitor upgrade_monitor { get; private set; default = new SimpleProgressMonitor(
         ProgressType.DB_UPGRADE); }
+    public SimpleProgressMonitor vacuum_monitor { get; private set; default = new SimpleProgressMonitor(
+        ProgressType.DB_VACUUM); }
     public SimpleProgressMonitor sending_monitor { get; private set;
         default = new SimpleProgressMonitor(ProgressType.ACTIVITY); }
     
@@ -61,6 +57,14 @@ private class Geary.ImapDB.Account : BaseObject {
             throw new EngineError.OPEN_REQUIRED("Database not open");
     }
     
+    private ImapDB.SearchQuery check_search_query(Geary.SearchQuery q) throws Error {
+        ImapDB.SearchQuery? query = q as ImapDB.SearchQuery;
+        if (query == null || query.account != this)
+            throw new EngineError.BAD_PARAMETERS("Geary.SearchQuery not associated with %s", name);
+        
+        return query;
+    }
+    
     public static void get_imap_db_storage_locations(File user_data_dir, out File db_file,
         out File attachments_dir) {
         db_file = ImapDB.Database.get_db_file(user_data_dir);
@@ -72,16 +76,18 @@ private class Geary.ImapDB.Account : BaseObject {
         if (db != null)
             throw new EngineError.ALREADY_OPEN("IMAP database already open");
         
-        db = new ImapDB.Database(user_data_dir, schema_dir, upgrade_monitor, account_information.email);
+        db = new ImapDB.Database(user_data_dir, schema_dir, upgrade_monitor, vacuum_monitor,
+            account_information.email);
         
         try {
-            db.open(
+            yield db.open_async(
                 Db.DatabaseFlags.CREATE_DIRECTORY | Db.DatabaseFlags.CREATE_FILE | Db.DatabaseFlags.CHECK_CORRUPTION,
                 cancellable);
         } catch (Error err) {
             warning("Unable to open database: %s", err.message);
             
             // close database before exiting
+            db.close(null);
             db = null;
             
             throw err;
@@ -135,8 +141,10 @@ private class Geary.ImapDB.Account : BaseObject {
         background_cancellable = new Cancellable();
         
         // Kick off a background update of the search table, but since the database is getting
-        // hammered at startup, wait a bit before starting the update
-        Timeout.add_seconds(POPULATE_SEARCH_TABLE_DELAY_SEC, () => {
+        // hammered at startup, wait a bit before starting the update ... use the ordinal to
+        // stagger these being fired off (important for users with many accounts registered)
+        int account_sec = account_information.ordinal.clamp(0, 10);
+        Timeout.add_seconds(POPULATE_SEARCH_TABLE_DELAY_SEC + account_sec, () => {
             populate_search_table_async.begin(background_cancellable);
             
             return false;
@@ -242,11 +250,16 @@ private class Geary.ImapDB.Account : BaseObject {
      * update_uid_info is true.
      */
     public async void update_folder_status_async(Geary.Imap.Folder imap_folder, bool update_uid_info,
-        Cancellable? cancellable) throws Error {
+        bool respect_marked_for_remove, Cancellable? cancellable) throws Error {
         check_open();
         
         Geary.Imap.FolderProperties properties = imap_folder.properties;
         Geary.FolderPath path = imap_folder.path;
+        
+        // adjust for marked remove, but don't write these adjustments to the database -- they're
+        // only reflected in memory via the properties
+        int adjust_unseen = 0;
+        int adjust_total = 0;
         
         yield db.exec_transaction_async(Db.TransactionType.RW, (cx) => {
             int64 parent_id;
@@ -254,6 +267,36 @@ private class Geary.ImapDB.Account : BaseObject {
                 debug("Unable to find parent ID of %s to update properties", path.to_string());
                 
                 return Db.TransactionOutcome.ROLLBACK;
+            }
+            
+            int64 folder_id;
+            if (!do_fetch_folder_id(cx, path, false, out folder_id, cancellable))
+                folder_id = Db.INVALID_ROWID;
+            
+            if (respect_marked_for_remove && folder_id != Db.INVALID_ROWID) {
+                Db.Statement stmt = cx.prepare("""
+                    SELECT flags
+                    FROM MessageTable
+                    WHERE id IN (
+                        SELECT message_id
+                        FROM MessageLocationTable
+                        WHERE folder_id = ? AND remove_marker = ?
+                    )
+                """);
+                stmt.bind_rowid(0, folder_id);
+                stmt.bind_bool(1, true);
+                
+                Db.Result results = stmt.exec(cancellable);
+                while (!results.finished) {
+                    adjust_total++;
+                    
+                    Imap.EmailFlags flags = new Imap.EmailFlags(Imap.MessageFlags.deserialize(
+                        results.string_at(0)));
+                    if (flags.contains(EmailFlags.UNREAD))
+                        adjust_unseen++;
+                    
+                    results.next(cancellable);
+                }
             }
             
             Db.Statement stmt;
@@ -290,7 +333,7 @@ private class Geary.ImapDB.Account : BaseObject {
         if (db_folder != null) {
             Imap.FolderProperties local_properties = db_folder.get_properties();
             
-            local_properties.set_status_unseen(properties.unseen);
+            local_properties.set_status_unseen(Numeric.int_floor(properties.unseen - adjust_unseen, 0));
             local_properties.recent = properties.recent;
             local_properties.attrs = properties.attrs;
             
@@ -299,8 +342,12 @@ private class Geary.ImapDB.Account : BaseObject {
                 local_properties.uid_next = properties.uid_next;
             }
             
-            if (properties.status_messages >= 0)
-                local_properties.set_status_message_count(properties.status_messages, false);
+            // only update STATUS MESSAGES count if previously set, but use this count as the
+            // "authoritative" value until another SELECT/EXAMINE or MESSAGES response
+            if (properties.status_messages >= 0) {
+                local_properties.set_status_message_count(
+                    Numeric.int_floor(properties.status_messages - adjust_total, 0), true);
+            }
         }
     }
     
@@ -658,25 +705,32 @@ private class Geary.ImapDB.Account : BaseObject {
         // Map of user-supplied search field names to column names.
         Gee.HashMap<string, string> field_names = new Gee.HashMap<string, string>();
         /// Can be typed in the search box like attachment:file.txt to find
-        /// messages with attachments with a particular name.
+        /// messages with attachments with a particular name.  The translated
+        /// string must match the string in Geary's help documentation.
         field_names.set(_("attachment"), "attachment");
         /// Can be typed in the search box like bcc:johndoe@example.com to find
-        /// messages bcc'd to a particular person.
+        /// messages bcc'd to a particular person.  The translated
+        /// string must match the string in Geary's help documentation.
         field_names.set(_("bcc"), "bcc");
         /// Can be typed in the search box like body:word to find the word only
-        /// if it occurs in the body of a message.
+        /// if it occurs in the body of a message.  The translated
+        /// string must match the string in Geary's help documentation.
         field_names.set(_("body"), "body");
         /// Can be typed in the search box like cc:johndoe@example.com to find
-        /// messages cc'd to a particular person.
+        /// messages cc'd to a particular person.  The translated
+        /// string must match the string in Geary's help documentation.
         field_names.set(_("cc"), "cc");
         /// Can be typed in the search box like from:johndoe@example.com to
-        /// find messages from a particular sender.
+        /// find messages from a particular sender.  The translated
+        /// string must match the string in Geary's help documentation.
         field_names.set(_("from"), "from_field");
         /// Can be typed in the search box like subject:word to find the word
-        /// only if it occurs in the subject of a message.
+        /// only if it occurs in the subject of a message.  The translated
+        /// string must match the string in Geary's help documentation.
         field_names.set(_("subject"), "subject");
         /// Can be typed in the search box like to:johndoe@example.com to find
-        /// messages received by a particular person.
+        /// messages received by a particular person.  The translated
+        /// string must match the string in Geary's help documentation.
         field_names.set(_("to"), "receivers");
         
         // Fields we allow the token to be "me" as in from:me.
@@ -695,7 +749,8 @@ private class Geary.ImapDB.Account : BaseObject {
             token = parts[1];
             if (key in addressable_fields) {
                 // "me" can be typed like from:me or cc:me, etc. as a shorthand
-                // to find mail to or from yourself in search.
+                // to find mail to or from yourself in search.  The translated
+                // string must match the string in Geary's help documentation.
                 if (token.down() == _("me"))
                     token = account_information.email;
             }
@@ -705,7 +760,87 @@ private class Geary.ImapDB.Account : BaseObject {
         return null;
     }
     
-    private void prepare_search_query(Geary.SearchQuery query) {
+    /**
+     * This method is used to convert an unquoted user-entered search terms into a stemmed search
+     * term.
+     *
+     * Prior experience with the Unicode Snowball stemmer indicates it's too aggressive for our
+     * tastes when coupled with prefix-matching of all unquoted terms (see
+     * https://bugzilla.gnome.org/show_bug.cgi?id=713179)   This method is part of a larger strategy
+     * designed to dampen that aggressiveness without losing the benefits of stemming entirely.
+     *
+     * Database upgrade 23 removes the old Snowball-stemmed FTS table and replaces it with one
+     * with no stemming (using only SQLite's "simple" tokenizer).  It also creates a "magic" SQLite
+     * table called TokenizerTable which allows for uniform queries to the Snowball stemmer, which
+     * is still installed in Geary.  Thus, we are now in the position to search for the original
+     * term and its stemmed variant, then do post-search processing to strip results which are
+     * too "greedy" due to prefix-matching the stemmed variant.
+     *
+     * Some heuristics are in place simply to determine if stemming should occur:
+     *
+     * # If stemming is unallowed, no stemming occurs.
+     * # If the term is < min. term length for stemming, no stemming occurs.
+     * # If the stemmer returns a stem that is the same as the original term, no stemming occurs.
+     * # If the difference between the stemmed word and the original term is more than
+     *   maximum allowed, no stemming occurs.  This works under the assumption that if
+     *   the user has typed a long word, they do not want to "go back" to searching for a much
+     *   shorter version of it.  (For example, "accountancies" stems to "account").
+     *
+     * Otherwise, the stem for the term is returned.
+     */
+    private string? stem_search_term(ImapDB.SearchQuery query, string term) {
+        if (!query.allow_stemming)
+            return null;
+        
+        int term_length = term.length;
+        if (term_length < query.min_term_length_for_stemming)
+            return null;
+        
+        string? stemmed = null;
+        try {
+            Db.Statement stmt = db.prepare("""
+                SELECT token
+                FROM TokenizerTable
+                WHERE input=?
+            """);
+            stmt.bind_string(0, term);
+            
+            // get stemmed string; if no result, fall through
+            Db.Result result = stmt.exec();
+            if (!result.finished)
+                stemmed = result.string_at(0);
+            else
+                debug("No stemmed term returned for \"%s\"", term);
+        } catch (Error err) {
+            debug("Unable to query tokenizer table for stemmed term for \"%s\": %s", term, err.message);
+            
+            // fall-through
+        }
+        
+        if (String.is_empty(stemmed)) {
+            debug("Empty stemmed term returned for \"%s\"", term);
+            
+            return null;
+        }
+        
+        // If same term returned, treat as non-stemmed
+        if (stemmed == term)
+            return null;
+        
+        // Don't search for stemmed words that are significantly shorter than the user's search term
+        if (term_length - stemmed.length > query.max_difference_term_stem_lengths) {
+            debug("Stemmed \"%s\" dropped searching for \"%s\": too much distance in terms",
+                stemmed, term);
+            
+            return null;
+        }
+        
+        debug("Search processing: term -> stem is \"%s\" -> \"%s\"", term, stemmed);
+        
+        return stemmed;
+    }
+    
+    private void prepare_search_query(ImapDB.SearchQuery query) {
         if (query.parsed)
             return;
         
@@ -743,16 +878,31 @@ private class Geary.ImapDB.Account : BaseObject {
                 --quotes;
             }
             
+            SearchTerm? term;
             if (in_quote) {
                 // HACK: this helps prevent a syntax error when the user types
                 // something like from:"somebody".  If we ever properly support
                 // quotes after : we can get rid of this.
-                s = s.replace(":", " ");
+                term = new SearchTerm(s, s, null, s.replace(":", " "), null);
             } else {
+                string original = s;
+                
+                // some common search phrases we don't respect and therefore don't want to fall
+                // through to search results
                 string lower = s.down();
-                if (lower == "" || lower == "and" || lower == "or" || lower == "not" || lower == "near"
-                    || lower.has_prefix("near/"))
-                    continue;
+                switch (lower) {
+                    case "":
+                    case "and":
+                    case "or":
+                    case "not":
+                    case "near":
+                        continue;
+                    
+                    default:
+                        if (lower.has_prefix("near/"))
+                            continue;
+                    break;
+                }
                 
                 if (s.has_prefix("-"))
                     s = s.substring(1);
@@ -765,13 +915,34 @@ private class Geary.ImapDB.Account : BaseObject {
                 if (parts.length > 1)
                     field = extract_field_from_token(parts, ref s);
                 
-                s = "\"" + s + "*\"";
+                // SQL MATCH syntax for parsed term
+                string? sql_s = "%s*".printf(s);
+                
+                // stem the word, but if stemmed and stem is simply shorter version of original
+                // term, only prefix-match search for it (i.e. avoid searching for
+                // [archive* OR archiv*] when that's the same as [archiv*]), otherwise search for
+                // both
+                string? stemmed = stem_search_term(query, s);
+                
+                string? sql_stemmed = null;
+                if (stemmed != null) {
+                    sql_stemmed = "%s*".printf(stemmed);
+                    if (s.has_prefix(stemmed))
+                        sql_s = null;
+                }
+                
+                // if term contains continuation characters, treat as exact search to reduce effects of
+                // tokenizer splitting terms w/ punctuation in them
+                if (String.contains_any_char(s, SEARCH_TERM_CONTINUATION_CHARS))
+                    s = "\"%s\"".printf(s);
+                
+                term = new SearchTerm(original, s, stemmed, sql_s, sql_stemmed);
             }
             
             if (in_quote && quotes % 2 != 0)
                 in_quote = false;
             
-            query.add_token(field, s);
+            query.add_search_term(field, term);
         }
         
         assert(!in_quote);
@@ -780,28 +951,53 @@ private class Geary.ImapDB.Account : BaseObject {
     }
     
     // Return a map of column -> phrase, to use as WHERE column MATCH 'phrase'.
-    private Gee.HashMap<string, string> get_query_phrases(Geary.SearchQuery query) {
+    private Gee.HashMap<string, string> get_query_phrases(ImapDB.SearchQuery query) {
         prepare_search_query(query);
         
         Gee.HashMap<string, string> phrases = new Gee.HashMap<string, string>();
         foreach (string? field in query.get_fields()) {
-            string? phrase = null;
-            Gee.List<string>? tokens = query.get_tokens(field);
-            if (tokens != null) {
-                string[] array = tokens.to_array();
-                // HACK: work around a bug in vala where it's not null-terminating
-                // arrays created from generic-typed functions (Gee.Collection.to_array)
-                // before passing them off to g_strjoinv.  Simply making a copy to a
-                // local proper string array adds the null for us.
-                string[] copy = new string[array.length];
-                for (int i = 0; i < array.length; ++i)
-                    copy[i] = array[i];
-                phrase = string.joinv(" ", copy).strip();
+            Gee.List<SearchTerm>? terms = query.get_search_terms(field);
+            if (terms == null || terms.size == 0)
+                continue;
+            
+            // Each SearchTerm is an AND but the SQL text within in are OR ... this allows for
+            // each user term to be AND but the variants of each term are or.  So, if terms are
+            // [party] and [eventful] and stems are [parti] and [event], the search would be:
+            //
+            // (party* OR parti*) AND (eventful* OR event*)
+            //
+            // Obviously with stemming there's the possibility of the stemmed variant being nothing
+            // but a broader search of the original term (such as event* and eventful*) but do both
+            // to determine from each hit result which term caused the hit, and if it's too greedy
+            // a match of the stemmed variant, it can be stripped from the results.
+            //
+            // Note that this uses SQLite's "standard" query syntax for MATCH, where AND is implied
+            // (and would be treated as search term if included), parentheses are not allowed, and
+            // OR has a higher precendence than AND.  So the above example in standard syntax is:
+            //
+            // party* OR parti* eventful* OR event*
+            StringBuilder builder = new StringBuilder();
+            foreach (SearchTerm term in terms) {
+                if (term.sql.size == 0)
+                    continue;
+                
+                if (term.is_exact) {
+                    builder.append_printf("%s ", term.parsed);
+                } else {
+                    bool is_first_sql = true;
+                    foreach (string sql in term.sql) {
+                        if (!is_first_sql)
+                            builder.append(" OR ");
+                        
+                        builder.append_printf("%s ", sql);
+                        is_first_sql = false;
+                    }
+                }
             }
             
-            if (!Geary.String.is_empty(phrase))
-                phrases.set((field == null ? "MessageSearchTable" : field), phrase);
+            phrases.set(field ?? "MessageSearchTable", builder.str);
         }
+        
         return phrases;
     }
     
@@ -855,19 +1051,39 @@ private class Geary.ImapDB.Account : BaseObject {
         return sql.str;
     }
     
-    public async Gee.Collection<Geary.EmailIdentifier>? search_async(Geary.SearchQuery query,
+    public async Gee.Collection<Geary.EmailIdentifier>? search_async(Geary.SearchQuery q,
         int limit = 100, int offset = 0, Gee.Collection<Geary.FolderPath?>? folder_blacklist = null,
-        Gee.Collection<Geary.EmailIdentifier>? search_ids = null, Cancellable? cancellable = null) throws Error {
+        Gee.Collection<Geary.EmailIdentifier>? search_ids = null, Cancellable? cancellable = null)
+        throws Error {
         check_open();
+        ImapDB.SearchQuery query = check_search_query(q);
         
         Gee.HashMap<string, string> query_phrases = get_query_phrases(query);
         if (query_phrases.size == 0)
             return null;
         
-        Gee.ArrayList<ImapDB.SearchEmailIdentifier> search_results
-            = new Gee.ArrayList<ImapDB.SearchEmailIdentifier>();
-        
+        // Do this outside of transaction to catch invalid search ids up-front
         string? search_ids_sql = get_search_ids_sql(search_ids);
+        
+        // for some searches, results are stripped if they're too "greedy", but this requires
+        // examining the matched text, which has an expense to fetch, so avoid doing so unless
+        // necessary
+        bool strip_results = true;
+        
+        // HORIZON strategy is configured in such a way to allow all stemmed variants to match,
+        // so don't do any stripping in that case
+        //
+        // If any of the search terms is exact-match (no prefix matching) or none have stemmed
+        // variants, then don't do stripping of "greedy" stemmed matching (because in both cases,
+        // there are none)
+        if (query.strategy == Geary.SearchQuery.Strategy.HORIZON)
+            strip_results = false;
+        else if (traverse<SearchTerm>(query.get_all_terms()).any(term => term.stemmed == null || term.is_exact))
+            strip_results = false;
+        
+        Gee.Set<ImapDB.EmailIdentifier> unstripped_ids = new Gee.HashSet<ImapDB.EmailIdentifier>();
+        Gee.Map<ImapDB.EmailIdentifier, Gee.Set<string>>? search_results = null;
+        
         yield db.exec_transaction_async(Db.TransactionType.RO, (cx) => {
             string blacklisted_ids_sql = do_get_blacklisted_message_ids_sql(
                 folder_blacklist, cx, cancellable);
@@ -909,95 +1125,117 @@ private class Geary.ImapDB.Account : BaseObject {
                 stmt.bind_int(bind_index++, offset);
             }
             
+            Gee.HashMap<int64?, ImapDB.EmailIdentifier> id_map = new Gee.HashMap<int64?, ImapDB.EmailIdentifier>(
+                Collection.int64_hash_func, Collection.int64_equal_func);
+            
             Db.Result result = stmt.exec(cancellable);
             while (!result.finished) {
-                int64 id = result.int64_at(0);
+                int64 message_id = result.int64_at(0);
                 int64 internaldate_time_t = result.int64_at(1);
                 DateTime? internaldate = (internaldate_time_t == -1
                     ? null : new DateTime.from_unix_local(internaldate_time_t));
-                search_results.add(new ImapDB.SearchEmailIdentifier(id, internaldate));
+                
+                ImapDB.EmailIdentifier id = new ImapDB.SearchEmailIdentifier(message_id, internaldate);
+                
+                unstripped_ids.add(id);
+                id_map.set(message_id, id);
                 
                 result.next(cancellable);
             }
             
+            if (!strip_results)
+                return Db.TransactionOutcome.DONE;
+            
+            search_results = do_get_search_matches(cx, query, id_map, cancellable);
+            
             return Db.TransactionOutcome.DONE;
         }, cancellable);
         
-        return (search_results.size == 0 ? null : search_results);
-    }
-    
-    // This applies a fudge-factor set of matches when the database results
-    // aren't entirely satisfactory, such as when you search for an email
-    // address and the database tokenizes out the @ and ., etc.  It's not meant
-    // to be comprehensive, just a little extra highlighting applied to make
-    // the results look a little closer to what you typed.
-    private void add_literal_matches(string raw_query, Gee.Set<string> search_matches) {
-        foreach (string word in raw_query.split(" ")) {
-            if (word.has_suffix("\""))
-                word = word.substring(0, word.length - 1);
-            if (word.has_prefix("\""))
-                word = word.substring(1);
-            
-            if (!String.is_empty_or_whitespace(word))
-                search_matches.add(word);
-        }
-    }
-    
-    public async Gee.Collection<string>? get_search_matches_async(Geary.SearchQuery query,
-        Gee.Collection<ImapDB.EmailIdentifier> ids, Cancellable? cancellable = null) throws Error {
-        check_open();
-        
-        Gee.HashMap<string, string> query_phrases = get_query_phrases(query);
-        if (query_phrases.size == 0)
+        if (unstripped_ids == null || unstripped_ids.size == 0)
             return null;
         
-        Gee.Set<string> search_matches = new Gee.HashSet<string>();
+        if (!strip_results)
+            return unstripped_ids;
         
-        yield db.exec_transaction_async(Db.TransactionType.RO, (cx) => {
-            StringBuilder sql = new StringBuilder();
-            sql.append("""
-                SELECT offsets(MessageSearchTable), *
-                FROM MessageSearchTable
-                WHERE docid IN (
-            """);
-            sql_append_ids(sql,
-                Geary.traverse<ImapDB.EmailIdentifier>(ids).map<int64?>(id => id.message_id).to_gee_iterable());
-            sql.append(")");
-            sql_add_query_phrases(sql, query_phrases);
-            
-            Db.Statement stmt = cx.prepare(sql.str);
-            sql_bind_query_phrases(stmt, 0, query_phrases);
-            
-            Db.Result result = stmt.exec(cancellable);
-            while (!result.finished) {
-                // Build a list of search offsets.
-                string[] offset_array = result.nonnull_string_at(0).split(" ");
-                Gee.ArrayList<SearchOffset> all_offsets = new Gee.ArrayList<SearchOffset>();
-                int j = 0;
-                while (true) {
-                    all_offsets.add(new SearchOffset(offset_array[j:j+4]));
-                    
-                    j += 4;
-                    if (j >= offset_array.length)
+        // at this point, there should be some "full" search results to strip from
+        assert(search_results != null && search_results.size > 0);
+        
+        strip_greedy_results(query, search_results);
+        
+        return search_results.size == 0 ? null : search_results.keys;
+    }
+    
+    // Strip out search results that only contain a hit due to "greedy" matching of the stemmed
+    // variants on all search terms
+    private void strip_greedy_results(ImapDB.SearchQuery query,
+        Gee.Map<ImapDB.EmailIdentifier, Gee.Set<string>> search_results) {
+        int prestripped_results = search_results.size;
+        Gee.MapIterator<ImapDB.EmailIdentifier, Gee.Set<string>> iter = search_results.map_iterator();
+        while (iter.next()) {
+            // For each matched string in this message, retain the message in the search results
+            // if it prefix-matches any of the straight-up parsed terms or matches a stemmed
+            // variant (with only max. difference in their lengths allowed, i.e. not a "greedy"
+            // match)
+            bool good_match_found = false;
+            foreach (string match in iter.get_value()) {
+                foreach (SearchTerm term in query.get_all_terms()) {
+                    // if prefix-matches parsed term, then don't strip
+                    if (match.has_prefix(term.parsed)) {
+                        good_match_found = true;
+                        
                         break;
+                    }
+                    
+                    // if prefix-matches stemmed term w/o doing so greedily, then don't strip
+                    if (term.stemmed != null && match.has_prefix(term.stemmed)) {
+                        int diff = match.length - term.stemmed.length;
+                        if (diff <= query.max_difference_match_stem_lengths) {
+                            good_match_found = true;
+                            
+                            break;
+                        }
+                    }
                 }
                 
-                // Iterate over the offset list, scrape strings from the database, and push
-                // the results into our return set.
-                foreach(SearchOffset offset in all_offsets) {
-                    string text = result.nonnull_string_at(offset.column + 1);
-                    search_matches.add(text[offset.byte_offset : offset.byte_offset + offset.size].down());
-                }
-                
-                result.next(cancellable);
+                if (good_match_found)
+                    break;
             }
+            
+            if (!good_match_found)
+                iter.unset();
+        }
+        
+        debug("Stripped %d emails from search for [%s] due to greedy stem matching",
+            prestripped_results - search_results.size, query.raw);
+    }
+    
+    public async Gee.Set<string>? get_search_matches_async(Geary.SearchQuery q,
+        Gee.Collection<ImapDB.EmailIdentifier> ids, Cancellable? cancellable = null) throws Error {
+        check_open();
+        ImapDB.SearchQuery query = check_search_query(q);
+        
+        Gee.Set<string>? search_matches = null;
+        yield db.exec_transaction_async(Db.TransactionType.RO, (cx) => {
+            Gee.HashMap<int64?, ImapDB.EmailIdentifier> id_map = new Gee.HashMap<
+                int64?, ImapDB.EmailIdentifier>(Collection.int64_hash_func, Collection.int64_equal_func);
+            foreach (ImapDB.EmailIdentifier id in ids)
+                id_map.set(id.message_id, id);
+            
+            Gee.Map<ImapDB.EmailIdentifier, Gee.Set<string>>? match_map =
+                do_get_search_matches(cx, query, id_map, cancellable);
+            if (match_map == null || match_map.size == 0)
+                return Db.TransactionOutcome.DONE;
+            
+            strip_greedy_results(query, match_map);
+            
+            search_matches = new Gee.HashSet<string>();
+            foreach (Gee.Set<string> matches in match_map.values)
+                search_matches.add_all(matches);
             
             return Db.TransactionOutcome.DONE;
         }, cancellable);
         
-        add_literal_matches(query.raw, search_matches);
-        
-        return (search_matches.size == 0 ? null : search_matches);
+        return search_matches;
     }
     
     public async Geary.Email fetch_email_async(ImapDB.EmailIdentifier email_id,
@@ -1094,17 +1332,13 @@ private class Geary.ImapDB.Account : BaseObject {
     private async void populate_search_table_async(Cancellable? cancellable) {
         debug("%s: Populating search table", account_information.email);
         try {
-            int total = yield get_email_count_async(cancellable);
-            search_index_monitor.set_interval(0, total);
-            search_index_monitor.notify_start();
-            
             while (!yield populate_search_table_batch_async(50, cancellable)) {
                 // With multiple accounts, meaning multiple background threads
                 // doing such CPU- and disk-heavy work, this process can cause
                 // the main thread to slow to a crawl.  This delay means the
                 // update takes more time, but leaves the main thread nice and
                 // snappy the whole time.
-                yield Geary.Scheduler.sleep_ms_async(250);
+                yield Geary.Scheduler.sleep_ms_async(50);
             }
         } catch (Error e) {
             debug("Error populating %s search table: %s", account_information.email, e.message);
@@ -1116,27 +1350,63 @@ private class Geary.ImapDB.Account : BaseObject {
         debug("%s: Done populating search table", account_information.email);
     }
     
-    private async bool populate_search_table_batch_async(int limit = 100,
-        Cancellable? cancellable) throws Error {
-        debug("%s: Searching for missing indexed messages...", account_information.email);
+    private static Gee.HashSet<int64?> do_build_rowid_set(Db.Result result, Cancellable? cancellable)
+        throws Error {
+        Gee.HashSet<int64?> rowid_set = new Gee.HashSet<int64?>(Collection.int64_hash_func,
+            Collection.int64_equal_func);
+        while (!result.finished) {
+            rowid_set.add(result.rowid_at(0));
+            result.next(cancellable);
+        }
         
-        int count = 0;
+        return rowid_set;
+    }
+    
+    private async bool populate_search_table_batch_async(int limit, Cancellable? cancellable)
+        throws Error {
+        debug("%s: Searching for up to %d missing indexed messages...", account_information.email,
+            limit);
+        
+        int count = 0, total_unindexed = 0;
         yield db.exec_transaction_async(Db.TransactionType.RW, (cx, cancellable) => {
+            // Embedding a SELECT within a SELECT is painfully slow with SQLite, so manually
+            // perform the operation
+            //
+            // Get all rowids for the MessageSearchTable and turn it into a HashSet
             Db.Statement stmt = cx.prepare("""
+                SELECT docid
+                FROM MessageSearchTable
+            """);
+            Gee.HashSet<int64?> search_ids = do_build_rowid_set(stmt.exec(cancellable), cancellable);
+            
+            // Do the same for the MessageTable
+            stmt = cx.prepare("""
                 SELECT id
                 FROM MessageTable
-                WHERE id NOT IN (
-                    SELECT docid
-                    FROM MessageSearchTable
-                )
-                LIMIT ?
             """);
-            stmt.bind_int(0, limit);
+            Gee.HashSet<int64?> message_ids = do_build_rowid_set(stmt.exec(cancellable), cancellable);
             
-            Db.Result result = stmt.exec(cancellable);
-            while (!result.finished) {
-                int64 id = result.rowid_at(0);
+            // guesstimate at the number that need to be indexed ... technically if this is zero then
+            // we're done, but for safety allow the chaffing to go through, in case there are search
+            // rows that do not correspond to message rows (which is bad but not fatal)
+            total_unindexed = (message_ids.size - search_ids.size).clamp(0, int.MAX);
+            
+            // chaff out any MessageTable entries not present in the MessageSearchTable ... since
+            // we're given a limit, stuff messages req'ing search into separate set and stop when limit
+            // reached
+            Gee.HashSet<int64?> unindexed_message_ids = new Gee.HashSet<int64?>(Collection.int64_hash_func,
+                Collection.int64_equal_func);
+            foreach (int64 message_id in message_ids) {
+                if (search_ids.contains(message_id))
+                    continue;
                 
+                unindexed_message_ids.add(message_id);
+                if (unindexed_message_ids.size >= limit)
+                    break;
+            }
+            
+            // For all remaining MessageTable rowid's, generate search table entry
+            foreach (int64 message_id in unindexed_message_ids) {
                 try {
                     Geary.Email.Field search_fields = Geary.Email.REQUIRED_FOR_MESSAGE |
                         Geary.Email.Field.ORIGINATORS | Geary.Email.Field.RECEIVERS |
@@ -1144,30 +1414,36 @@ private class Geary.ImapDB.Account : BaseObject {
                     
                     Geary.Email.Field db_fields;
                     MessageRow row = Geary.ImapDB.Folder.do_fetch_message_row(
-                        cx, id, search_fields, out db_fields, cancellable);
-                    Geary.Email email = row.to_email(new Geary.ImapDB.EmailIdentifier(id, null));
-                    Geary.ImapDB.Folder.do_add_attachments(cx, email, id, cancellable);
+                        cx, message_id, search_fields, out db_fields, cancellable);
+                    Geary.Email email = row.to_email(new Geary.ImapDB.EmailIdentifier(message_id, null));
+                    Geary.ImapDB.Folder.do_add_attachments(cx, email, message_id, cancellable);
                     
-                    Geary.ImapDB.Folder.do_add_email_to_search_table(cx, id, email, cancellable);
+                    Geary.ImapDB.Folder.do_add_email_to_search_table(cx, message_id, email, cancellable);
                 } catch (Error e) {
                     // This is a somewhat serious issue since we rely on
                     // there always being a row in the search table for
                     // every message.
-                    warning("Error adding message %lld to the search table: %s", id, e.message);
+                    warning("Error adding message %s to the search table: %s", message_id.to_string(),
+                        e.message);
                 }
                 
                 ++count;
-                
-                result.next(cancellable);
             }
             
             return Db.TransactionOutcome.DONE;
         }, cancellable);
         
-        search_index_monitor.increment(count);
-        
-        if (count > 0)
-            debug("%s: Found %d/%d missing indexed messages...", account_information.email, count, limit);
+        if (count > 0) {
+            debug("%s: Found %d/%d missing indexed messages, %d remaining...",
+                account_information.email, count, limit, total_unindexed);
+            
+            if (!search_index_monitor.is_in_progress) {
+                search_index_monitor.set_interval(0, total_unindexed);
+                search_index_monitor.notify_start();
+            }
+            
+            search_index_monitor.increment(count);
+        }
         
         return (count < limit);
     }
@@ -1512,6 +1788,70 @@ private class Geary.ImapDB.Account : BaseObject {
             folder.get_properties().set_status_unseen(folder.get_properties().email_unread +
                 unread_change.get(path));
         }
+    }
+    
+    // Not using a MultiMap because when traversing want to process all values at once per iteration,
+    // not per key-value
+    public Gee.Map<ImapDB.EmailIdentifier, Gee.Set<string>>? do_get_search_matches(Db.Connection cx,
+        ImapDB.SearchQuery query, Gee.Map<int64?, ImapDB.EmailIdentifier> id_map, Cancellable? cancellable)
+        throws Error {
+        if (id_map.size == 0)
+            return null;
+        
+        Gee.HashMap<string, string> query_phrases = get_query_phrases(query);
+        if (query_phrases.size == 0)
+            return null;
+        
+        StringBuilder sql = new StringBuilder();
+        sql.append("""
+            SELECT docid, offsets(MessageSearchTable), *
+            FROM MessageSearchTable
+            WHERE docid IN (
+        """);
+        sql_append_ids(sql, id_map.keys);
+        sql.append(")");
+        sql_add_query_phrases(sql, query_phrases);
+        
+        Db.Statement stmt = cx.prepare(sql.str);
+        sql_bind_query_phrases(stmt, 0, query_phrases);
+        
+        Gee.Map<ImapDB.EmailIdentifier, Gee.Set<string>> search_matches = new Gee.HashMap<
+            ImapDB.EmailIdentifier, Gee.Set<string>>();
+        
+        Db.Result result = stmt.exec(cancellable);
+        while (!result.finished) {
+            int64 docid = result.rowid_at(0);
+            assert(id_map.contains(docid));
+            ImapDB.EmailIdentifier id = id_map.get(docid);
+            
+            // offsets() function returns a list of 4 strings that are ints indicating position
+            // and length of match string in search table corpus
+            string[] offset_array = result.nonnull_string_at(1).split(" ");
+            
+            Gee.Set<string> matches = new Gee.HashSet<string>();
+            
+            int j = 0;
+            while (true) {
+                unowned string[] offset_string = offset_array[j:j+4];
+                
+                int column = int.parse(offset_string[0]);
+                int byte_offset = int.parse(offset_string[2]);
+                int size = int.parse(offset_string[3]);
+                
+                unowned string text = result.nonnull_string_at(column + 2);
+                matches.add(text[byte_offset : byte_offset + size].down());
+                
+                j += 4;
+                if (j >= offset_array.length)
+                    break;
+            }
+            
+            search_matches.set(id, matches);
+            
+            result.next(cancellable);
+        }
+        
+        return search_matches.size > 0 ? search_matches : null;
     }
 }
 

@@ -1,4 +1,4 @@
-/* Copyright 2011-2014 Yorba Foundation
+/* Copyright 2011-2015 Yorba Foundation
  * Portions copyright (C) 2000-2013 Jeffrey Stedfast
  *
  * This software is licensed under the GNU Lesser General Public License
@@ -62,21 +62,29 @@ public string create_subject_for_forward(Geary.Email email) {
 // address in the list once. Used to remove the sender's address from a list of addresses being
 // created for the "reply to" recipients.
 private void remove_address(Gee.List<Geary.RFC822.MailboxAddress> addresses,
-    string address, bool empty_ok = false) {
+    RFC822.MailboxAddress address, bool empty_ok = false) {
     for (int i = 0; i < addresses.size; ++i) {
-        if (addresses[i].address == address && (empty_ok || addresses.size > 1))
+        if (addresses[i].equal_to(address) && (empty_ok || addresses.size > 1))
             addresses.remove_at(i--);
     }
 }
 
-public string create_to_addresses_for_reply(Geary.Email email,
-    string? sender_address = null) {
+private bool email_is_from_sender(Geary.Email email, Gee.List<RFC822.MailboxAddress>? sender_addresses) {
+    if (sender_addresses == null)
+        return false;
+    
+    return Geary.traverse<RFC822.MailboxAddress>(sender_addresses)
+        .any(a => email.from.get_all().contains(a));
+}
+
+public Geary.RFC822.MailboxAddresses create_to_addresses_for_reply(Geary.Email email,
+    Gee.List< Geary.RFC822.MailboxAddress>? sender_addresses = null) {
     Gee.List<Geary.RFC822.MailboxAddress> new_to =
         new Gee.ArrayList<Geary.RFC822.MailboxAddress>();
     
     // If we're replying to something we sent, send it to the same people we originally did.
     // Otherwise, we'll send to the reply-to address or the from address.
-    if (email.to != null && !String.is_empty(sender_address) && email.from.contains(sender_address))
+    if (email.to != null && email_is_from_sender(email, sender_addresses))
         new_to.add_all(email.to.get_all());
     else if (email.reply_to != null)
         new_to.add_all(email.reply_to.get_all());
@@ -84,31 +92,63 @@ public string create_to_addresses_for_reply(Geary.Email email,
         new_to.add_all(email.from.get_all());
     
     // Exclude the current sender.  No need to receive the mail they're sending.
-    if (!String.is_empty(sender_address))
-        remove_address(new_to, sender_address);
+    if (sender_addresses != null) {
+        foreach (RFC822.MailboxAddress address in sender_addresses)
+            remove_address(new_to, address);
+    }
     
-    return new_to.size > 0 ? new Geary.RFC822.MailboxAddresses(new_to).to_rfc822_string() : "";
+    return new Geary.RFC822.MailboxAddresses(new_to);
 }
 
-public string create_cc_addresses_for_reply_all(Geary.Email email,
-    string? sender_address = null) {
+public Geary.RFC822.MailboxAddresses create_cc_addresses_for_reply_all(Geary.Email email,
+    Gee.List<Geary.RFC822.MailboxAddress>? sender_addresses = null) {
     Gee.List<Geary.RFC822.MailboxAddress> new_cc = new Gee.ArrayList<Geary.RFC822.MailboxAddress>();
     
     // If we're replying to something we received, also add other recipients.  Don't do this for
     // emails we sent, since everyone we sent it to is already covered in
     // create_to_addresses_for_reply().
-    if (email.to != null && (String.is_empty(sender_address) ||
-        !email.from.contains(sender_address)))
+    if (email.to != null && !email_is_from_sender(email, sender_addresses))
         new_cc.add_all(email.to.get_all());
     
     if (email.cc != null)
         new_cc.add_all(email.cc.get_all());
     
     // Again, exclude the current sender.
-    if (!String.is_empty(sender_address))
-        remove_address(new_cc, sender_address, true);
+    if (sender_addresses != null) {
+        foreach (RFC822.MailboxAddress address in sender_addresses)
+            remove_address(new_cc, address, true);
+    }
     
-    return new_cc.size > 0 ? new Geary.RFC822.MailboxAddresses(new_cc).to_rfc822_string() : "";
+    return new Geary.RFC822.MailboxAddresses(new_cc);
+}
+
+public Geary.RFC822.MailboxAddresses merge_addresses(Geary.RFC822.MailboxAddresses? first,
+    Geary.RFC822.MailboxAddresses? second) {
+    Gee.List<Geary.RFC822.MailboxAddress> result = new Gee.ArrayList<Geary.RFC822.MailboxAddress>();
+    if (first != null) {
+        result.add_all(first.get_all());
+        // Add addresses from second that aren't in first.
+        if (second != null)
+            foreach (Geary.RFC822.MailboxAddress address in second)
+                if (!first.contains_normalized(address.address))
+                    result.add(address);
+    } else if (second != null) {
+        result.add_all(second.get_all());
+    }
+    
+    return new Geary.RFC822.MailboxAddresses(result);
+}
+
+public Geary.RFC822.MailboxAddresses remove_addresses(Geary.RFC822.MailboxAddresses? from_addresses,
+    Geary.RFC822.MailboxAddresses? remove_addresses) {
+    Gee.List<Geary.RFC822.MailboxAddress> result = new Gee.ArrayList<Geary.RFC822.MailboxAddress>();
+    if (from_addresses != null) {
+        result.add_all(from_addresses.get_all());
+        if (remove_addresses != null)
+            foreach (Geary.RFC822.MailboxAddress address in remove_addresses)
+                remove_address(result, address, true);
+    }
+    return new Geary.RFC822.MailboxAddresses(result);
 }
 
 public string reply_references(Geary.Email source) {
@@ -138,13 +178,20 @@ public string reply_references(Geary.Email source) {
     return (list.size > 0) ? string.joinv(" ", strings) : "";
 }
 
-public string email_addresses_for_reply(Geary.RFC822.MailboxAddresses? addresses,
-    bool html_format) {
-    
+public string email_addresses_for_reply(Geary.RFC822.MailboxAddresses? addresses, TextFormat format) {
     if (addresses == null)
         return "";
     
-    return html_format ? HTML.escape_markup(addresses.to_string()) : addresses.to_string();
+    switch (format) {
+        case TextFormat.HTML:
+            return HTML.escape_markup(addresses.to_string());
+        
+        case TextFormat.PLAIN:
+            return addresses.to_string();
+        
+        default:
+            assert_not_reached();
+    }
 }
 
 
@@ -157,7 +204,7 @@ public string email_addresses_for_reply(Geary.RFC822.MailboxAddresses? addresses
  * If html_format is true, the message will be quoted in HTML format.
  * Otherwise it will be in plain text.
  */
-public string quote_email_for_reply(Geary.Email email, string? quote, bool html_format) {
+public string quote_email_for_reply(Geary.Email email, string? quote, TextFormat format) {
     if (email.body == null && quote == null)
         return "";
     
@@ -173,13 +220,13 @@ public string quote_email_for_reply(Geary.Email email, string? quote, bool html_
         /// the original sender.
         string QUOTED_LABEL = _("On %1$s, %2$s wrote:");
         quoted += QUOTED_LABEL.printf(email.date.value.format(DATE_FORMAT),
-                                      email_addresses_for_reply(email.from, html_format));
+                                      email_addresses_for_reply(email.from, format));
 
     } else if (email.from != null) {
         /// The quoted header for a message being replied to (in case the date is not known).
         /// %s will be replaced by the original sender.
         string QUOTED_LABEL = _("%s wrote:");
-        quoted += QUOTED_LABEL.printf(email_addresses_for_reply(email.from, html_format));
+        quoted += QUOTED_LABEL.printf(email_addresses_for_reply(email.from, format));
 
     } else if (email.date != null) {
         /// The quoted header for a message being replied to (in case the sender is not known).
@@ -190,7 +237,7 @@ public string quote_email_for_reply(Geary.Email email, string? quote, bool html_
     
     quoted += "<br />";
     
-    quoted += "\n" + quote_body(email, quote, true, html_format);
+    quoted += "\n" + quote_body(email, quote, true, format);
     
     if (quote != null)
         quoted += "<br /><br />\n";
@@ -207,7 +254,7 @@ public string quote_email_for_reply(Geary.Email email, string? quote, bool html_
  * If html_format is true, the message will be quoted in HTML format.
  * Otherwise it will be in plain text.
  */
-public string quote_email_for_forward(Geary.Email email, string? quote, bool html_format) {
+public string quote_email_for_forward(Geary.Email email, string? quote, TextFormat format) {
     if (email.body == null && quote == null)
         return "";
     
@@ -215,31 +262,31 @@ public string quote_email_for_forward(Geary.Email email, string? quote, bool htm
     
     quoted += _("---------- Forwarded message ----------");
     quoted += "\n\n";
-    string from_line = email_addresses_for_reply(email.from, html_format);
+    string from_line = email_addresses_for_reply(email.from, format);
     if (!String.is_empty_or_whitespace(from_line))
         quoted += _("From: %s\n").printf(from_line);
     quoted += _("Subject: %s\n").printf(email.subject != null ? email.subject.to_string() : "");
     quoted += _("Date: %s\n").printf(email.date != null ? email.date.to_string() : "");
-    string to_line = email_addresses_for_reply(email.to, html_format);
+    string to_line = email_addresses_for_reply(email.to, format);
     if (!String.is_empty_or_whitespace(to_line))
         quoted += _("To: %s\n").printf(to_line);
-    string cc_line = email_addresses_for_reply(email.cc, html_format);
+    string cc_line = email_addresses_for_reply(email.cc, format);
     if (!String.is_empty_or_whitespace(cc_line))
         quoted += _("Cc: %s\n").printf(cc_line);
     quoted += "\n";  // A blank line between headers and body
     
     quoted = quoted.replace("\n", "<br />");
     
-    quoted += quote_body(email, quote, false, html_format);
+    quoted += quote_body(email, quote, false, format);
     
     return quoted;
 }
 
-private string quote_body(Geary.Email email, string? quote, bool use_quotes, bool html_format) {
+private string quote_body(Geary.Email email, string? quote, bool use_quotes, TextFormat format) {
     string? body_text = "";
     
     try {
-        body_text = quote ?? email.get_message().get_body(html_format);
+        body_text = quote ?? email.get_message().get_body(format, null);
     } catch (Error error) {
         debug("Could not get message text. %s", error.message);
     }

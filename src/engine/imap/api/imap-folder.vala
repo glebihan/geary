@@ -1,4 +1,4 @@
-/* Copyright 2011-2014 Yorba Foundation
+/* Copyright 2011-2015 Yorba Foundation
  *
  * This software is licensed under the GNU Lesser General Public License
  * (version 2.1 or later).  See the COPYING file in this distribution.
@@ -33,7 +33,7 @@ private class Geary.Imap.Folder : BaseObject {
     private Nonblocking.Mutex cmd_mutex = new Nonblocking.Mutex();
     private Gee.HashMap<SequenceNumber, FetchedData> fetch_accumulator = new Gee.HashMap<
         SequenceNumber, FetchedData>();
-    private Gee.TreeSet<Imap.UID> search_accumulator = new Gee.TreeSet<Imap.UID>();
+    private Gee.Set<Imap.UID> search_accumulator = new Gee.HashSet<Imap.UID>();
     
     /**
      * A (potentially unsolicited) response from the server.
@@ -72,7 +72,14 @@ private class Geary.Imap.Folder : BaseObject {
     public signal void disconnected(ClientSession.DisconnectReason reason);
     
     internal Folder(FolderPath path, ClientSessionManager session_mgr, StatusData status, MailboxInformation info) {
-        assert(status.mailbox.equal_to(info.mailbox));
+        // Used to assert() here, but that meant that any issue with internationalization/encoding
+        // made Geary unusable for a subset of servers accessed/configured in a non-English language...
+        // this is not the end of the world, but it does suggest an I18N issue, potentially with
+        // how XLIST returns folder names on different servers.
+        if (!status.mailbox.equal_to(info.mailbox)) {
+            message("%s: IMAP folder created with differing mailbox names (STATUS=%s LIST=%s)",
+                path.to_string(), status.to_string(), info.to_string());
+        }
         
         this.session_mgr = session_mgr;
         this.info = info;
@@ -228,11 +235,16 @@ private class Geary.Imap.Folder : BaseObject {
             recent(total);
     }
     
-    private void on_search(Gee.List<int> seq_or_uid) {
+    private void on_search(int64[] seq_or_uid) {
         // All SEARCH from this class are UID SEARCH, so can reliably convert and add to
         // accumulator
-        foreach (int uid in seq_or_uid)
-            search_accumulator.add(new UID(uid));
+        foreach (int64 uid in seq_or_uid) {
+            try {
+                search_accumulator.add(new UID.checked(uid));
+            } catch (ImapError imaperr) {
+                debug("%s Unable to process SEARCH UID result: %s", to_string(), imaperr.message);
+            }
+        }
     }
     
     private void on_status_response(StatusResponse status_response) {
@@ -300,8 +312,8 @@ private class Geary.Imap.Folder : BaseObject {
     // FETCH commands can generate a FolderError.RETRY.  State will be updated to accomodate retry,
     // but all Commands must be regenerated to ensure new state is reflected in requests.
     private async Gee.Map<Command, StatusResponse>? exec_commands_async(Gee.Collection<Command> cmds,
-        out Gee.HashMap<SequenceNumber, FetchedData>? fetched,
-        out Gee.TreeSet<Imap.UID>? search_results, Cancellable? cancellable) throws Error {
+        out Gee.HashMap<SequenceNumber, FetchedData>? fetched, out Gee.Set<Imap.UID>? search_results,
+        Cancellable? cancellable) throws Error {
         int token = yield cmd_mutex.claim_async(cancellable);
         Gee.Map<Command, StatusResponse>? responses = null;
         // execute commands with mutex locked
@@ -326,7 +338,7 @@ private class Geary.Imap.Folder : BaseObject {
         
         if (search_accumulator.size > 0) {
             search_results = search_accumulator;
-            search_accumulator = new Gee.TreeSet<Imap.UID>();
+            search_accumulator = new Gee.HashSet<Imap.UID>();
         } else {
             search_results = null;
         }
@@ -408,33 +420,21 @@ private class Geary.Imap.Folder : BaseObject {
         }
     }
     
-    // Utility method for listing a UID range
-    // TODO: Offer parameter so a SortedSet could be returned (or, the caller must supply the Set)
+    // Utility method for listing UIDs on the remote within the supplied range
     public async Gee.Set<Imap.UID>? list_uids_async(MessageSet msg_set, Cancellable? cancellable)
         throws Error {
         check_open();
         
-        // TODO: exec_commands_async() can throw a RETRY error, but currently that doesn't affect
-        // this code path.  When it does, this will need to honor that error.
-        FetchCommand cmd = new FetchCommand.data_type(msg_set, FetchDataSpecifier.UID);
+        // Although FETCH could be used, SEARCH is more efficient in returning pure UID results,
+        // which is all we're interested in here
+        SearchCriteria criteria = new SearchCriteria(SearchCriterion.message_set(msg_set));
+        SearchCommand cmd = new SearchCommand.uid(criteria);
         
-        Gee.HashMap<SequenceNumber, FetchedData>? fetched;
-        yield exec_commands_async(Geary.iterate<Command>(cmd).to_array_list(), out fetched, null,
+        Gee.Set<Imap.UID>? search_results;
+        yield exec_commands_async(Geary.iterate<Command>(cmd).to_array_list(), null, out search_results,
             cancellable);
-        if (fetched == null || fetched.size == 0)
-            return null;
         
-        // Because the number of UIDs can be immense, do hashing in the background
-        Gee.Set<Imap.UID> uids = new Gee.HashSet<Imap.UID>();
-        yield Nonblocking.Concurrent.global.schedule_async(() => {
-            foreach (FetchedData fetched_data in fetched.values) {
-                Imap.UID? uid = fetched_data.data_map.get(FetchDataSpecifier.UID) as Imap.UID;
-                if (uid != null)
-                    uids.add(uid);
-            }
-        }, cancellable);
-        
-        return (uids.size > 0) ? uids : null;
+        return (search_results != null && search_results.size > 0) ? search_results : null;
     }
     
     private Gee.Collection<FetchCommand> assemble_list_commands(Imap.MessageSet msg_set,
@@ -614,7 +614,8 @@ private class Geary.Imap.Folder : BaseObject {
         return map;
     }
     
-    public async void remove_email_async(MessageSet msg_set, Cancellable? cancellable) throws Error {
+    public async void remove_email_async(Gee.List<MessageSet> msg_sets, Cancellable? cancellable)
+        throws Error {
         check_open();
         
         Gee.List<MessageFlag> flags = new Gee.ArrayList<MessageFlag>();
@@ -622,8 +623,14 @@ private class Geary.Imap.Folder : BaseObject {
         
         Gee.List<Command> cmds = new Gee.ArrayList<Command>();
         
-        StoreCommand store_cmd = new StoreCommand(msg_set, flags, true, false);
-        cmds.add(store_cmd);
+        // Build STORE command for all MessageSets, see if all are UIDs so we can use UID EXPUNGE
+        bool all_uid = true;
+        foreach (MessageSet msg_set in msg_sets) {
+            if (!msg_set.is_uid)
+                all_uid = false;
+            
+            cmds.add(new StoreCommand(msg_set, flags, StoreCommand.Option.ADD_FLAGS));
+        }
         
         // TODO: Only use old-school EXPUNGE when closing folder (or rely on CLOSE to do that work
         // for us).  See:
@@ -632,15 +639,17 @@ private class Geary.Imap.Folder : BaseObject {
         // However, current client implementation doesn't properly close INBOX when application
         // shuts down, which means deleted messages return at application start.  See:
         // http://redmine.yorba.org/issues/6865
-        if (msg_set.is_uid && session.capabilities.supports_uidplus())
-            cmds.add(new ExpungeCommand.uid(msg_set));
-        else
+        if (all_uid && session.capabilities.supports_uidplus()) {
+            foreach (MessageSet msg_set in msg_sets)
+                cmds.add(new ExpungeCommand.uid(msg_set));
+        } else {
             cmds.add(new ExpungeCommand());
+        }
         
         yield exec_commands_async(cmds, null, null, cancellable);
     }
     
-    public async void mark_email_async(MessageSet msg_set, Geary.EmailFlags? flags_to_add,
+    public async void mark_email_async(Gee.List<MessageSet> msg_sets, Geary.EmailFlags? flags_to_add,
         Geary.EmailFlags? flags_to_remove, Cancellable? cancellable) throws Error {
         check_open();
         
@@ -653,25 +662,63 @@ private class Geary.Imap.Folder : BaseObject {
             return;
         
         Gee.Collection<Command> cmds = new Gee.ArrayList<Command>();
-        
-        if (msg_flags_add.size > 0)
-            cmds.add(new StoreCommand(msg_set, msg_flags_add, true, false));
-        
-        if (msg_flags_remove.size > 0)
-            cmds.add(new StoreCommand(msg_set, msg_flags_remove, false, false));
+        foreach (MessageSet msg_set in msg_sets) {
+            if (msg_flags_add.size > 0)
+                cmds.add(new StoreCommand(msg_set, msg_flags_add, StoreCommand.Option.ADD_FLAGS));
+            
+            if (msg_flags_remove.size > 0)
+                cmds.add(new StoreCommand(msg_set, msg_flags_remove, StoreCommand.Option.REMOVE_FLAGS));
+        }
         
         yield exec_commands_async(cmds, null, null, cancellable);
     }
     
-    public async void copy_email_async(MessageSet msg_set, Geary.FolderPath destination,
+    // Returns a mapping of the source UID to the destination UID.  If the MessageSet is not for
+    // UIDs, then null is returned.  If the server doesn't support COPYUID, null is returned.
+    public async Gee.Map<UID, UID>? copy_email_async(MessageSet msg_set, FolderPath destination,
         Cancellable? cancellable) throws Error {
         check_open();
         
         CopyCommand cmd = new CopyCommand(msg_set,
             new MailboxSpecifier.from_folder_path(destination, null));
         
-        yield exec_commands_async(Geary.iterate<Command>(cmd).to_array_list(), null,
-            null, cancellable);
+        Gee.Map<Command, StatusResponse>? responses = yield exec_commands_async(
+            Geary.iterate<Command>(cmd).to_array_list(), null, null, cancellable);
+        
+        if (!responses.has_key(cmd))
+            return null;
+        
+        StatusResponse response = responses.get(cmd);
+        if (response.response_code != null && msg_set.is_uid) {
+            Gee.List<UID>? src_uids = null;
+            Gee.List<UID>? dst_uids = null;
+            try {
+                response.response_code.get_copyuid(null, out src_uids, out dst_uids);
+            } catch (ImapError ierr) {
+                debug("Unable to retrieve COPYUID UIDs: %s", ierr.message);
+            }
+            
+            if (!Collection.is_empty(src_uids) && !Collection.is_empty(dst_uids)) {
+                Gee.Map<UID, UID> copyuids = new Gee.HashMap<UID, UID>();
+                int ctr = 0;
+                for (;;) {
+                    UID? src_uid = (ctr < src_uids.size) ? src_uids[ctr] : null;
+                    UID? dst_uid = (ctr < dst_uids.size) ? dst_uids[ctr] : null;
+                    
+                    if (src_uid != null && dst_uid != null)
+                        copyuids.set(src_uid, dst_uid);
+                    else
+                        break;
+                    
+                    ctr++;
+                }
+                
+                if (copyuids.size > 0)
+                    return copyuids;
+            }
+        }
+        
+        return null;
     }
     
     public async Gee.SortedSet<Imap.UID>? search_async(SearchCriteria criteria, Cancellable? cancellable)
@@ -680,12 +727,17 @@ private class Geary.Imap.Folder : BaseObject {
         
         // always perform a UID SEARCH
         Gee.Collection<Command> cmds = new Gee.ArrayList<Command>();
-        cmds.add(new SearchCommand(criteria, true));
+        cmds.add(new SearchCommand.uid(criteria));
         
-        Gee.TreeSet<Imap.UID>? search_results;
+        Gee.Set<Imap.UID>? search_results;
         yield exec_commands_async(cmds, null, out search_results, cancellable);
+        if (search_results == null || search_results.size == 0)
+            return null;
         
-        return (search_results != null && search_results.size > 0) ? search_results : null;
+        Gee.SortedSet<Imap.UID> tree = new Gee.TreeSet<Imap.UID>();
+        tree.add_all(search_results);
+        
+        return tree;
     }
     
     // NOTE: If fields are added or removed from this method, BASIC_FETCH_FIELDS *must* be updated
@@ -995,7 +1047,7 @@ private class Geary.Imap.Folder : BaseObject {
         StatusResponse response = responses.get(cmd);
         if (response.status == Status.OK && response.response_code != null &&
             response.response_code.get_response_code_type().is_value("appenduid")) {
-            UID new_id = new UID(response.response_code.get_as_string(2).as_int());
+            UID new_id = new UID.checked(response.response_code.get_as_string(2).as_int64());
             
             return new ImapDB.EmailIdentifier.no_message_id(new_id);
         }

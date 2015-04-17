@@ -1,4 +1,4 @@
-/* Copyright 2012-2014 Yorba Foundation
+/* Copyright 2012-2015 Yorba Foundation
  *
  * This software is licensed under the GNU Lesser General Public License
  * (version 2.1 or later).  See the COPYING file in this distribution.
@@ -35,7 +35,7 @@ class AlertDialog : Object {
     }
 
     public void set_focus_response(Gtk.ResponseType response) {
-        Gtk.Widget? to_focus = dialog.get_widget_for_response(Gtk.ResponseType.OK);
+        Gtk.Widget? to_focus = dialog.get_widget_for_response(response);
         if (to_focus != null)
             to_focus.grab_focus();
     }
